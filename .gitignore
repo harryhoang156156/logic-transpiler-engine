@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build & Test Outputs
+dist/
+coverage/
+.vitest/
+
+# Environment & Secrets (CRITICAL OPSEC)
+.env
+.env.local
+.env.*.local
+
+# Local Databases & Logs
+*.db
+*.db-sqlite
+*.sqlite
+*.sqlite3
+logs.txt
+*.log
+
+# Aider Cache & History
+.aider*
+
+# OS & IDE Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
