@@ -54,6 +54,22 @@ jobs:
         env:
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
+          MODULE_NAME=$(basename "${{ github.event.inputs.spec_file }}" .md)
+          if [ "$MODULE_NAME" = "ai_client" ] || [ "$MODULE_NAME" = "prompts" ]; then
+            SRC_FILE="src/client/${MODULE_NAME}.ts"
+          elif [ "$MODULE_NAME" = "parser" ] || [ "$MODULE_NAME" = "gap_analyzer" ]; then
+            SRC_FILE="src/ingestion/${MODULE_NAME}.ts"
+          elif [ "$MODULE_NAME" = "ts_emitter" ] || [ "$MODULE_NAME" = "atomic_merger" ]; then
+            SRC_FILE="src/compiler/${MODULE_NAME}.ts"
+          elif [ "$MODULE_NAME" = "compiler_guard" ]; then
+            SRC_FILE="src/verification/${MODULE_NAME}.ts"
+          else
+            SRC_FILE="src/${MODULE_NAME}.ts"
+          fi
+          TEST_FILE="tests/${MODULE_NAME}.test.ts"
+
+          mkdir -p "$(dirname "$SRC_FILE")" tests
+
           aider \
             --model nvidia_nim/meta/llama-3.3-70b-instruct \
             --no-show-model-warnings \
@@ -61,9 +77,11 @@ jobs:
             --auto-commits \
             --read "${{ github.event.inputs.overview_file }}" \
             --read "${{ github.event.inputs.spec_file }}" \
+            --file "$SRC_FILE" \
+            --file "$TEST_FILE" \
             --test-cmd "npm run build && npm run test" \
             --auto-test \
-            --message "Strictly adhere to all global architecture rules in ${{ github.event.inputs.overview_file }}. Implement the exact module specified in ${{ github.event.inputs.spec_file }}. Step 1: Write the Vitest suite in tests/ importing from 'vitest'. Step 2: Implement the TypeScript code in src/. Loop until build and tests pass."
+            --message "Strictly adhere to all global architecture rules in ${{ github.event.inputs.overview_file }}. Implement the exact module specified in ${{ github.event.inputs.spec_file }} inside $SRC_FILE, and write its complete Vitest unit test suite inside $TEST_FILE importing from 'vitest'. Loop until both npm run build and npm run test pass with zero errors."
 
       - name: Push Branch & Open Pull Request
         env:
@@ -73,8 +91,8 @@ jobs:
           if ! git diff --cached --quiet; then
             git commit -m "chore: save remaining Aider generated files"
           fi
-          if [ -z "$(git log main..HEAD --oneline)" ]; then
-            echo "Error: Aider did not generate any commits. Check the Aider step logs above."
+          if [ -z "$(git diff --name-only main HEAD -- src/ tests/)" ]; then
+            echo "Error: Aider did not generate any files in src/ or tests/. Check the Aider step logs above."
             exit 1
           fi
           git push -u origin "$BRANCH_NAME"
