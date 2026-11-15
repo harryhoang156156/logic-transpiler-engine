@@ -1,0 +1,52 @@
+name: Autonomous Aider TDD Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec_file:
+        description: 'Target component specification file path (e.g., specs/schemas.md)'
+        required: true
+        type: string
+      overview_file:
+        description: 'Global system overview / rules file path'
+        required: false
+        default: 'architecture_overview.md'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Run Aider Self-Healing Test & Build Loop
+        uses: paulgautier/aider-action@main
+        env:
+          OPENAI_API_BASE: https://nvidia.com
+          OPENAI_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        with:
+          args: >
+            --model openai/nvidia/nemotron-3-ultra-550b-a55b
+            --yes
+            --auto-commits
+            --read ${{ github.event.inputs.overview_file }}
+            --read ${{ github.event.inputs.spec_file }}
+            --test-cmd "npm run build && npm run test"
+            --auto-test
+            --pr
+            --message "Strictly adhere to all global architecture rules in ${{ github.event.inputs.overview_file }}. Implement the exact module specified in ${{ github.event.inputs.spec_file }}. Step 1: Write the Vitest suite in tests/ importing from 'vitest'. Step 2: Implement the TypeScript code in src/. Loop until build and tests pass."
