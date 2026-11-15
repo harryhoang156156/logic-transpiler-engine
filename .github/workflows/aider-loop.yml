@@ -31,22 +31,47 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Setup Python for Aider
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Node & Aider Dependencies
+        run: |
+          npm install
+          python -m pip install --upgrade pip
+          pip install aider-chat
+
+      - name: Create Feature Branch
+        run: |
+          git config --global user.name "Aider Cloud Agent"
+          git config --global user.email "aider-bot@users.noreply.github.com"
+          BRANCH_NAME="aider/$(basename ${{ github.event.inputs.spec_file }} .md)-${{ github.run_id }}"
+          git checkout -b "$BRANCH_NAME"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
       - name: Run Aider Self-Healing Test & Build Loop
-        uses: paulgautier/aider-action@main
         env:
           OPENAI_API_BASE: https://nvidia.com
           OPENAI_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        with:
-          args: >
-            --model openai/nvidia/nemotron-3-ultra-550b-a55b
-            --yes
-            --auto-commits
-            --read ${{ github.event.inputs.overview_file }}
-            --read ${{ github.event.inputs.spec_file }}
-            --test-cmd "npm run build && npm run test"
-            --auto-test
-            --pr
+        run: |
+          aider \
+            --model openai/nvidia/nemotron-3-ultra-550b-a55b \
+            --yes \
+            --auto-commits \
+            --read "${{ github.event.inputs.overview_file }}" \
+            --read "${{ github.event.inputs.spec_file }}" \
+            --test-cmd "npm run build && npm run test" \
+            --auto-test \
             --message "Strictly adhere to all global architecture rules in ${{ github.event.inputs.overview_file }}. Implement the exact module specified in ${{ github.event.inputs.spec_file }}. Step 1: Write the Vitest suite in tests/ importing from 'vitest'. Step 2: Implement the TypeScript code in src/. Loop until build and tests pass."
+
+      - name: Push Branch & Open Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push -u origin "$BRANCH_NAME"
+          gh pr create \
+            --title "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)" \
+            --body "Automated TDD implementation of \`${{ github.event.inputs.spec_file }}\` verified via \`npm run build && npm run test\`." \
+            --base main \
+            --head "$BRANCH_NAME"
