@@ -45,18 +45,18 @@ jobs:
       - name: Create Feature Branch
         run: |
           git config --global user.name "Aider Cloud Agent"
-          git config --global user.email "aider-bot@users.noreply.github.com"
+          git config --global user.email "aider-bot@://github.com"
           BRANCH_NAME="aider/$(basename ${{ github.event.inputs.spec_file }} .md)-${{ github.run_id }}"
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
       - name: Run Aider Self-Healing Test & Build Loop
         env:
-          OPENAI_API_BASE: https://nvidia.com
-          OPENAI_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
           aider \
-            --model openai/nvidia/nemotron-3-ultra-550b-a55b \
+            --model nvidia_nim/meta/llama-3.3-70b-instruct \
+            --no-show-model-warnings \
             --yes \
             --auto-commits \
             --read "${{ github.event.inputs.overview_file }}" \
@@ -69,6 +69,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: save remaining Aider generated files"
+          fi
+          if [ -z "$(git log main..HEAD --oneline)" ]; then
+            echo "Error: Aider did not generate any commits. Check the Aider step logs above."
+            exit 1
+          fi
           git push -u origin "$BRANCH_NAME"
           gh pr create \
             --title "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)" \
