@@ -13,9 +13,9 @@ on:
         default: 'architecture_overview.md'
         type: string
       model:
-        description: 'NVIDIA NIM model ID (prefixed with nvidia_nim/)'
+        description: 'NVIDIA NIM model ID (prefixed with openai/)'
         required: false
-        default: 'nvidia_nim/qwen/qwen2.5-coder-32b-instruct'
+        default: 'openai/qwen/qwen3-coder-480b-a35b-instruct'
         type: string
 
 permissions:
@@ -59,14 +59,15 @@ jobs:
       - name: Create Feature Branch
         run: |
           git config --global user.name "Aider Cloud Agent"
-          git config --global user.email "aider-bot@://github.com"
+          git config --global user.email "aider-bot@users.noreply.github.com"
           BRANCH_NAME="aider/$(basename ${{ github.event.inputs.spec_file }} .md)-${{ github.run_id }}"
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
       - name: Run Aider Self-Healing Loop
         env:
-          NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          OPENAI_API_BASE: https://integrate.api.nvidia.com/v1
+          OPENAI_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           HF_HUB_DISABLE_TELEMETRY: '1'
         run: |
           aider \
