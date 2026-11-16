@@ -15,7 +15,7 @@ on:
       model:
         description: 'NVIDIA NIM model ID (prefixed with openai/)'
         required: false
-        default: 'openai/qwen/qwen3-coder-480b-a35b-instruct'
+        default: 'openai/deepseek-ai/deepseek-v4.1-flash'
         type: string
 
 permissions:
@@ -56,6 +56,22 @@ jobs:
           npm install
           pip install -q aider-chat
 
+      - name: Verify Active NVIDIA NIM Model
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          RAW_MODEL="${{ github.event.inputs.model }}"
+          MODEL_ID="${RAW_MODEL#openai/}"
+          LIVE_MODELS=$(curl -s -H "Authorization: Bearer $NVIDIA_API_KEY" https://nvidia.com)
+          if echo "$LIVE_MODELS" | grep -q "\"$MODEL_ID\""; then
+            echo "Verified active model: $RAW_MODEL"
+            echo "ACTIVE_MODEL=$RAW_MODEL" >> $GITHUB_ENV
+          else
+            FALLBACK_ID=$(echo "$LIVE_MODELS" | python3 -c "import sys, json; data=json.load(sys.stdin).get('data', []); print(next((m['id'] for m in data if 'deepseek' in m['id'] or 'nemotron' in m['id'] or 'coder' in m['id']), data[0]['id']))")
+            echo "Model $MODEL_ID retired/missing. Auto-switching to live model: openai/$FALLBACK_ID"
+            echo "ACTIVE_MODEL=openai/$FALLBACK_ID" >> $GITHUB_ENV
+          fi
+
       - name: Create Feature Branch
         run: |
           git config --global user.name "Aider Cloud Agent"
@@ -71,7 +87,7 @@ jobs:
           HF_HUB_DISABLE_TELEMETRY: '1'
         run: |
           aider \
-            --model "${{ github.event.inputs.model }}" \
+            --model "$ACTIVE_MODEL" \
             --edit-format whole \
             --no-show-model-warnings \
             --no-stream \
