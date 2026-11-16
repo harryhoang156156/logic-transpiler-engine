@@ -13,19 +13,22 @@ on:
         default: 'architecture_overview.md'
         type: string
       model:
-        description: 'NVIDIA NIM model ID (prefixed with openai/)'
+        description: 'NVIDIA NIM model ID (with or without openai/ prefix)'
         required: false
-        default: 'openai/deepseek-ai/deepseek-v4.1-flash'
+        default: 'deepseek-ai/deepseek-v3.2'
         type: string
 
 permissions:
   contents: write
   pull-requests: write
 
+env:
+  NVIDIA_API_BASE: https://integrate.api.nvidia.com/v1
+
 jobs:
   build-and-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -33,89 +36,200 @@ jobs:
           fetch-depth: 0
 
       - name: Verify Input File Paths
+        shell: bash
         run: |
-          if [ ! -f "${{ github.event.inputs.overview_file }}" ]; then
-            echo "Error: Overview file '${{ github.event.inputs.overview_file }}' not found." && exit 1
-          fi
-          if [ ! -f "${{ github.event.inputs.spec_file }}" ]; then
-            echo "Error: Spec file '${{ github.event.inputs.spec_file }}' not found." && exit 1
-          fi
+          set -euo pipefail
+          for name in SPEC_FILE OVERVIEW_FILE; do
+            value="${!name:-}"
+            if [[ -z "$value" ]]; then
+              echo "::error::$name is empty"
+              exit 1
+            fi
+            if [[ "$value" == /* || "$value" == *"../"* ]]; then
+              echo "::error::$name must be a repo-relative path: $value"
+              exit 1
+            fi
+            if [[ ! -f "$value" ]]; then
+              echo "::error::$name not found: $value"
+              exit 1
+            fi
+          done
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: pip
 
       - name: Install Dependencies
         run: |
-          npm install
-          pip install -q aider-chat
+          npm ci
+          python -m pip install --upgrade pip
+          python -m pip install aider-chat
 
-      - name: Verify Active NVIDIA NIM Model
+      - name: Resolve NVIDIA NIM Model
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          REQUESTED_MODEL: ${{ github.event.inputs.model }}
+        shell: bash
         run: |
-          RAW_MODEL="${{ github.event.inputs.model }}"
-          MODEL_ID="${RAW_MODEL#openai/}"
-          LIVE_MODELS=$(curl -s -H "Authorization: Bearer $NVIDIA_API_KEY" https://nvidia.com)
-          if echo "$LIVE_MODELS" | grep -q "\"$MODEL_ID\""; then
-            echo "Verified active model: $RAW_MODEL"
-            echo "ACTIVE_MODEL=$RAW_MODEL" >> $GITHUB_ENV
-          else
-            FALLBACK_ID=$(echo "$LIVE_MODELS" | python3 -c "import sys, json; data=json.load(sys.stdin).get('data', []); print(next((m['id'] for m in data if 'deepseek' in m['id'] or 'nemotron' in m['id'] or 'coder' in m['id']), data[0]['id']))")
-            echo "Model $MODEL_ID retired/missing. Auto-switching to live model: openai/$FALLBACK_ID"
-            echo "ACTIVE_MODEL=openai/$FALLBACK_ID" >> $GITHUB_ENV
+          set -euo pipefail
+
+          if [[ -z "${NVIDIA_API_KEY:-}" ]]; then
+            echo "::error::NVIDIA_API_KEY secret is not configured."
+            exit 1
           fi
 
+          curl --fail --silent --show-error --retry 2 --retry-delay 2 \
+            -H "Authorization: Bearer ${NVIDIA_API_KEY}" \
+            "${NVIDIA_API_BASE}/models" \
+            -o "${RUNNER_TEMP}/nim-models.json"
+
+          python3 - "$RUNNER_TEMP/nim-models.json" "$REQUESTED_MODEL" <<'PY'
+          import json, os, sys
+          from pathlib import Path
+
+          models_path = Path(sys.argv[1])
+          requested = (sys.argv[2] or "").strip().removeprefix("openai/")
+          data = json.loads(models_path.read_text())
+          models = [item.get("id") for item in data.get("data", []) if isinstance(item, dict) and item.get("id")]
+          if not models:
+              raise SystemExit("::error::NVIDIA NIM /v1/models returned no model IDs.")
+
+          selected = requested if requested in models else None
+          if not selected:
+              for candidate in models:
+                  low = candidate.lower()
+                  if "deepseek" in low or "nemotron" in low:
+                      selected = candidate
+                      break
+              if not selected:
+                  raise SystemExit(
+                      "::error::Requested model is not available and no DeepSeek/Nemotron fallback exists. "
+                      + f"Available models: {', '.join(models[:25])}"
+                  )
+              print(f"::warning::Requested model '{requested or '(none)'}' unavailable; using '{selected}'.")
+          print(f"Using NVIDIA NIM model: {selected}")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"AIDER_MODEL=openai/{selected}\n")
+          PY
+
+          curl --fail --silent --show-error --max-time 60 \
+            -H "Authorization: Bearer ${NVIDIA_API_KEY}" \
+            -H "Content-Type: application/json" \
+            --data-binary @- \
+            "${NVIDIA_API_BASE}/chat/completions" <<'JSON' > "${RUNNER_TEMP}/nim-smoke-response.json"
+          {
+            "model": "openai/${AIDER_MODEL#openai/}",
+            "messages": [{ "role": "user", "content": "Reply with OK only." }],
+            "max_tokens": 8,
+            "stream": false
+          }
+          JSON
+
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          response = json.loads(Path(os.environ["RUNNER_TEMP"], "nim-smoke-response.json").read_text())
+          choices = response.get("choices", [])
+          if not choices or not choices[0].get("message", {}).get("content", "").strip():
+              raise SystemExit(f"::error::NVIDIA NIM chat-completions smoke test returned no assistant content: {response}")
+          print("NVIDIA NIM smoke test passed.")
+          PY
+
       - name: Create Feature Branch
+        shell: bash
         run: |
+          set -euo pipefail
           git config --global user.name "Aider Cloud Agent"
           git config --global user.email "aider-bot@users.noreply.github.com"
-          BRANCH_NAME="aider/$(basename ${{ github.event.inputs.spec_file }} .md)-${{ github.run_id }}"
+          SPEC_NAME="$(basename "${{ github.event.inputs.spec_file }}" .md)"
+          BRANCH_NAME="aider/${SPEC_NAME}-${GITHUB_RUN_ID}"
           git checkout -b "$BRANCH_NAME"
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          echo "BRANCH_NAME=$BRANCH_NAME" >> "$GITHUB_ENV"
 
-      - name: Run Aider Self-Healing Loop
+      - name: Run Aider TDD Loop
         env:
           OPENAI_API_BASE: https://integrate.api.nvidia.com/v1
           OPENAI_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          HF_HUB_DISABLE_TELEMETRY: '1'
+        shell: bash
         run: |
+          set -euo pipefail
+
+          SPEC_FILE="${{ github.event.inputs.spec_file }}"
+          OVERVIEW_FILE="${{ github.event.inputs.overview_file }}"
+          SOURCE_NAME="$(basename "${SPEC_FILE}" .md)"
+          case "$SOURCE_NAME" in
+            ai_client|prompts) SRC_FILE="src/client/${SOURCE_NAME}.ts" ;;
+            parser|gap_analyzer) SRC_FILE="src/ingestion/${SOURCE_NAME}.ts" ;;
+            ts_emitter|atomic_merger) SRC_FILE="src/compiler/${SOURCE_NAME}.ts" ;;
+            compiler_guard) SRC_FILE="src/verification/${SOURCE_NAME}.ts" ;;
+            *) SRC_FILE="src/${SOURCE_NAME}.ts" ;;
+          esac
+          TEST_FILE="tests/${SOURCE_NAME}.test.ts"
+
+          mkdir -p "$(dirname "$SRC_FILE")" tests
+
+          cat > "${RUNNER_TEMP}/aider-prompt.txt" <<EOF
+          Implement the module described in ${SPEC_FILE} and follow all rules in ${OVERVIEW_FILE}.
+          Create a complete TypeScript implementation in ${SRC_FILE} and a Vitest test suite in ${TEST_FILE}.
+          Do not output placeholders, stubs, comments, or pseudo-code.
+          Ensure the code is production-quality and imports/exports match the repo conventions.
+          Keep the implementation focused on the exact module requested.
+          Run the provided build and test command, fix any failing tests or TypeScript errors, and keep iterating until both pass.
+          EOF
+
           aider \
-            --model "$ACTIVE_MODEL" \
-            --edit-format whole \
+            --model "$AIDER_MODEL" \
+            --edit-format diff \
             --no-show-model-warnings \
             --no-stream \
             --no-auto-lint \
             --yes \
             --auto-commits \
-            --read "${{ github.event.inputs.overview_file }}" \
-            --read "${{ github.event.inputs.spec_file }}" \
+            --read "$OVERVIEW_FILE" \
+            --read "$SPEC_FILE" \
             --test-cmd "npm run build && npm run test" \
             --auto-test \
-            --message "Read ${{ github.event.inputs.overview_file }} and ${{ github.event.inputs.spec_file }}. Create the target TypeScript file in src/ and its Vitest suite in tests/ (importing from 'vitest'). Use .js extensions on relative imports (e.g. '../schemas.js'). Loop until npm run build and npm run test pass."
+            --message-file "${RUNNER_TEMP}/aider-prompt.txt"
 
-      - name: Verify & Open Pull Request
+          for file in "$SRC_FILE" "$TEST_FILE"; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error::Aider did not generate a non-empty file: $file"
+              exit 1
+            fi
+          done
+
+      - name: Verify, Build, Test, and Open PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)"
+            git commit -m "feat: implement $(basename "${{ github.event.inputs.spec_file }}" .md)"
           fi
-          if [ -z "$(git diff --name-only main HEAD -- src/ tests/)" ]; then
-            echo "Error: Aider did not generate any files in src/ or tests/. Check the Aider step logs above for API errors." && exit 1
+
+          if [[ -z "$(git diff --name-only origin/main HEAD -- src/ tests/)" ]]; then
+            echo "::error::Aider did not generate any files in src/ or tests/."
+            exit 1
           fi
+
           npm run build
           npm run test
+
           git push -u origin "$BRANCH_NAME"
           gh pr create \
-            --title "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)" \
-            --body "Automated TDD implementation of \`${{ github.event.inputs.spec_file }}\`." \
+            --title "feat: implement $(basename "${{ github.event.inputs.spec_file }}" .md)" \
+            --body "Automated TDD implementation of \`${{ github.event.inputs.spec_file }}\` verified via \`npm run build && npm run test\`." \
             --base main \
             --head "$BRANCH_NAME"
