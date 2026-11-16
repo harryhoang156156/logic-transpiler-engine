@@ -24,6 +24,8 @@ permissions:
 
 env:
   NVIDIA_API_BASE: https://integrate.api.nvidia.com/v1
+  SPEC_FILE: ${{ inputs.spec_file }}
+  OVERVIEW_FILE: ${{ inputs.overview_file }}
 
 jobs:
   build-and-verify:
@@ -42,7 +44,7 @@ jobs:
           for name in SPEC_FILE OVERVIEW_FILE; do
             value="${!name:-}"
             if [[ -z "$value" ]]; then
-              echo "::error::$name is empty"
+              echo "::error::$name is empty. Confirm the workflow_dispatch input is set."
               exit 1
             fi
             if [[ "$value" == /* || "$value" == *"../"* ]]; then
@@ -76,7 +78,7 @@ jobs:
       - name: Resolve NVIDIA NIM Model
         env:
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-          REQUESTED_MODEL: ${{ github.event.inputs.model }}
+          REQUESTED_MODEL: ${{ inputs.model }}
         shell: bash
         run: |
           set -euo pipefail
@@ -91,7 +93,7 @@ jobs:
             "${NVIDIA_API_BASE}/models" \
             -o "${RUNNER_TEMP}/nim-models.json"
 
-          python3 - "$RUNNER_TEMP/nim-models.json" "$REQUESTED_MODEL" <<'PY'
+          python3 - "${RUNNER_TEMP}/nim-models.json" "$REQUESTED_MODEL" <<'PY'
           import json, os, sys
           from pathlib import Path
 
@@ -120,37 +122,13 @@ jobs:
               f.write(f"AIDER_MODEL=openai/{selected}\n")
           PY
 
-          curl --fail --silent --show-error --max-time 60 \
-            -H "Authorization: Bearer ${NVIDIA_API_KEY}" \
-            -H "Content-Type: application/json" \
-            --data-binary @- \
-            "${NVIDIA_API_BASE}/chat/completions" <<'JSON' > "${RUNNER_TEMP}/nim-smoke-response.json"
-          {
-            "model": "openai/${AIDER_MODEL#openai/}",
-            "messages": [{ "role": "user", "content": "Reply with OK only." }],
-            "max_tokens": 8,
-            "stream": false
-          }
-          JSON
-
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-
-          response = json.loads(Path(os.environ["RUNNER_TEMP"], "nim-smoke-response.json").read_text())
-          choices = response.get("choices", [])
-          if not choices or not choices[0].get("message", {}).get("content", "").strip():
-              raise SystemExit(f"::error::NVIDIA NIM chat-completions smoke test returned no assistant content: {response}")
-          print("NVIDIA NIM smoke test passed.")
-          PY
-
       - name: Create Feature Branch
         shell: bash
         run: |
           set -euo pipefail
           git config --global user.name "Aider Cloud Agent"
           git config --global user.email "aider-bot@users.noreply.github.com"
-          SPEC_NAME="$(basename "${{ github.event.inputs.spec_file }}" .md)"
+          SPEC_NAME="$(basename "$SPEC_FILE" .md)"
           BRANCH_NAME="aider/${SPEC_NAME}-${GITHUB_RUN_ID}"
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> "$GITHUB_ENV"
@@ -163,9 +141,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          SPEC_FILE="${{ github.event.inputs.spec_file }}"
-          OVERVIEW_FILE="${{ github.event.inputs.overview_file }}"
-          SOURCE_NAME="$(basename "${SPEC_FILE}" .md)"
+          SOURCE_NAME="$(basename "$SPEC_FILE" .md)"
           case "$SOURCE_NAME" in
             ai_client|prompts) SRC_FILE="src/client/${SOURCE_NAME}.ts" ;;
             parser|gap_analyzer) SRC_FILE="src/ingestion/${SOURCE_NAME}.ts" ;;
@@ -191,7 +167,6 @@ jobs:
             --edit-format diff \
             --no-show-model-warnings \
             --no-stream \
-            --no-auto-lint \
             --yes \
             --auto-commits \
             --read "$OVERVIEW_FILE" \
@@ -216,7 +191,7 @@ jobs:
 
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m "feat: implement $(basename "${{ github.event.inputs.spec_file }}" .md)"
+            git commit -m "feat: implement $(basename "$SPEC_FILE" .md)"
           fi
 
           if [[ -z "$(git diff --name-only origin/main HEAD -- src/ tests/)" ]]; then
@@ -229,7 +204,7 @@ jobs:
 
           git push -u origin "$BRANCH_NAME"
           gh pr create \
-            --title "feat: implement $(basename "${{ github.event.inputs.spec_file }}" .md)" \
-            --body "Automated TDD implementation of \`${{ github.event.inputs.spec_file }}\` verified via \`npm run build && npm run test\`." \
+            --title "feat: implement $(basename "$SPEC_FILE" .md)" \
+            --body "Automated TDD implementation of \`${SPEC_FILE}\`, verified via \`npm run build && npm run test\`." \
             --base main \
             --head "$BRANCH_NAME"
