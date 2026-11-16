@@ -12,6 +12,11 @@ on:
         required: false
         default: 'architecture_overview.md'
         type: string
+      model:
+        description: 'NVIDIA NIM model ID (prefixed with nvidia_nim/)'
+        required: false
+        default: 'nvidia_nim/deepseek-ai/deepseek-v4-flash'
+        type: string
 
 permissions:
   contents: write
@@ -20,27 +25,41 @@ permissions:
 jobs:
   build-and-verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js Environment
+      - name: Setup Node.js & Python
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - name: Setup Python for Aider
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Install Node & Aider Dependencies
+      - name: Install Dependencies
         run: |
           npm install
-          python -m pip install --upgrade pip
-          pip install aider-chat
+          pip install -q aider-chat
+
+      - name: Pre-Flight NVIDIA NIM Check
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          MODEL_SLUG="${{ github.event.inputs.model }}"
+          MODEL_SLUG="${MODEL_SLUG#nvidia_nim/}"
+          STATUS=$(curl -s -o /tmp/nim.json -w "%{http_code}" \
+            -X POST "https://nvidia.com" \
+            -H "Authorization: Bearer $NVIDIA_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"$MODEL_SLUG\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":5}")
+          if [ "$STATUS" != "200" ]; then
+            echo "NIM API Error (HTTP $STATUS):" && cat /tmp/nim.json && exit 1
+          fi
 
       - name: Create Feature Branch
         run: |
@@ -50,54 +69,41 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Run Aider Self-Healing Test & Build Loop
+      - name: Run Aider Self-Healing Loop
         env:
           NVIDIA_NIM_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          HF_HUB_DISABLE_TELEMETRY: '1'
         run: |
-          MODULE_NAME=$(basename "${{ github.event.inputs.spec_file }}" .md)
-          if [ "$MODULE_NAME" = "ai_client" ] || [ "$MODULE_NAME" = "prompts" ]; then
-            SRC_FILE="src/client/${MODULE_NAME}.ts"
-          elif [ "$MODULE_NAME" = "parser" ] || [ "$MODULE_NAME" = "gap_analyzer" ]; then
-            SRC_FILE="src/ingestion/${MODULE_NAME}.ts"
-          elif [ "$MODULE_NAME" = "ts_emitter" ] || [ "$MODULE_NAME" = "atomic_merger" ]; then
-            SRC_FILE="src/compiler/${MODULE_NAME}.ts"
-          elif [ "$MODULE_NAME" = "compiler_guard" ]; then
-            SRC_FILE="src/verification/${MODULE_NAME}.ts"
-          else
-            SRC_FILE="src/${MODULE_NAME}.ts"
-          fi
-          TEST_FILE="tests/${MODULE_NAME}.test.ts"
-
-          mkdir -p "$(dirname "$SRC_FILE")" tests
-
           aider \
-            --model nvidia_nim/meta/llama-3.3-70b-instruct \
+            --model "${{ github.event.inputs.model }}" \
+            --edit-format whole \
             --no-show-model-warnings \
+            --no-stream \
             --yes \
             --auto-commits \
+            --max-test-runs 5 \
             --read "${{ github.event.inputs.overview_file }}" \
             --read "${{ github.event.inputs.spec_file }}" \
-            --file "$SRC_FILE" \
-            --file "$TEST_FILE" \
             --test-cmd "npm run build && npm run test" \
             --auto-test \
-            --message "Strictly adhere to all global architecture rules in ${{ github.event.inputs.overview_file }}. Implement the exact module specified in ${{ github.event.inputs.spec_file }} inside $SRC_FILE, and write its complete Vitest unit test suite inside $TEST_FILE importing from 'vitest'. Loop until both npm run build and npm run test pass with zero errors."
+            --message "Read ${{ github.event.inputs.overview_file }} and ${{ github.event.inputs.spec_file }}. Create the target TypeScript file in src/ and its Vitest suite in tests/ (importing from 'vitest'). Use .js extensions on relative imports (e.g. '../schemas.js'). Loop until npm run build and npm run test pass."
 
-      - name: Push Branch & Open Pull Request
+      - name: Verify & Open Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          npm run build
+          npm run test
           git add -A
           if ! git diff --cached --quiet; then
-            git commit -m "chore: save remaining Aider generated files"
+            git commit -m "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)"
           fi
           if [ -z "$(git diff --name-only main HEAD -- src/ tests/)" ]; then
-            echo "Error: Aider did not generate any files in src/ or tests/. Check the Aider step logs above."
-            exit 1
+            echo "Error: No files created in src/ or tests/." && exit 1
           fi
           git push -u origin "$BRANCH_NAME"
           gh pr create \
             --title "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)" \
-            --body "Automated TDD implementation of \`${{ github.event.inputs.spec_file }}\` verified via \`npm run build && npm run test\`." \
+            --body "Automated TDD implementation of \`${{ github.event.inputs.spec_file }}\`." \
             --base main \
             --head "$BRANCH_NAME"
