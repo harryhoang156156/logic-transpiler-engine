@@ -15,7 +15,7 @@ on:
       model:
         description: 'NVIDIA NIM model ID (prefixed with nvidia_nim/)'
         required: false
-        default: 'nvidia_nim/deepseek-ai/deepseek-v3.2'
+        default: 'nvidia_nim/qwen/qwen2.5-coder-32b-instruct'
         type: string
 
 permissions:
@@ -32,12 +32,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js & Python
+      - name: Verify Input File Paths
+        run: |
+          if [ ! -f "${{ github.event.inputs.overview_file }}" ]; then
+            echo "Error: Overview file '${{ github.event.inputs.overview_file }}' not found." && exit 1
+          fi
+          if [ ! -f "${{ github.event.inputs.spec_file }}" ]; then
+            echo "Error: Spec file '${{ github.event.inputs.spec_file }}' not found." && exit 1
+          fi
+
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -64,6 +74,7 @@ jobs:
             --edit-format whole \
             --no-show-model-warnings \
             --no-stream \
+            --no-auto-lint \
             --yes \
             --auto-commits \
             --read "${{ github.event.inputs.overview_file }}" \
@@ -76,15 +87,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          npm run build
-          npm run test
           git add -A
           if ! git diff --cached --quiet; then
             git commit -m "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)"
           fi
           if [ -z "$(git diff --name-only main HEAD -- src/ tests/)" ]; then
-            echo "Error: No files created in src/ or tests/." && exit 1
+            echo "Error: Aider did not generate any files in src/ or tests/. Check the Aider step logs above for API errors." && exit 1
           fi
+          npm run build
+          npm run test
           git push -u origin "$BRANCH_NAME"
           gh pr create \
             --title "feat: implement $(basename ${{ github.event.inputs.spec_file }} .md)" \
