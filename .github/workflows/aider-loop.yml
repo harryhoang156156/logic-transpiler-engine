@@ -15,7 +15,7 @@ on:
       model:
         description: 'NVIDIA NIM model ID (prefixed with nvidia_nim/)'
         required: false
-        default: 'nvidia_nim/deepseek-ai/deepseek-v4-flash'
+        default: 'nvidia_nim/deepseek-ai/deepseek-v3.2'
         type: string
 
 permissions:
@@ -45,21 +45,6 @@ jobs:
         run: |
           npm install
           pip install -q aider-chat
-
-      - name: Pre-Flight NVIDIA NIM Check
-        env:
-          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-        run: |
-          MODEL_SLUG="${{ github.event.inputs.model }}"
-          MODEL_SLUG="${MODEL_SLUG#nvidia_nim/}"
-          STATUS=$(curl -s -o /tmp/nim.json -w "%{http_code}" \
-            -X POST "https://nvidia.com" \
-            -H "Authorization: Bearer $NVIDIA_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"model\":\"$MODEL_SLUG\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"max_tokens\":5}")
-          if [ "$STATUS" != "200" ]; then
-            echo "NIM API Error (HTTP $STATUS):" && cat /tmp/nim.json && exit 1
-          fi
 
       - name: Create Feature Branch
         run: |
