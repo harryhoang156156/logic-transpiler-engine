@@ -50,7 +50,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "Aider Cloud Agent"
-          git config --global user.email "aider-bot@://github.com"
+          git config --global user.email "aider-bot@users.noreply.github.com"
           gh pr checkout "${{ github.event.inputs.pr_number }}"
 
       - name: Run Aider Fix Loop
