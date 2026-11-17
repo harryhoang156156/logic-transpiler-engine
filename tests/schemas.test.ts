@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, assertType } from 'vitest';
+import type { ASTNode, BaseNode, ExpressionBlock } from '../src/schemas.js';
 import { ZodError } from 'zod';
 import {
   ASTNodeSchema,
@@ -123,6 +124,47 @@ describe('ASTNodeSchema', () => {
     expect(() => ASTNodeSchema.parse(invalid)).toThrow(ZodError);
   });
 
+  it.each([
+    'if (ready) { run();',
+    'run(); }',
+    '} {',
+    'const value = { nested: { count: 1 };',
+    'const value = `result: ${ { count: 1 }`;',
+  ])('rejects unbalanced snippet: %s', (codeSnippet) => {
+    expect(() => ASTNodeSchema.parse({
+      id: 'expr_unbalanced', type: 'ExpressionBlock', codeSnippet,
+    })).toThrow(ZodError);
+  });
+
+  it.each([
+    'const value = { nested: { count: 1 } };',
+    'console.log("{");',
+    "console.log('}');",
+    '/* { */ run(); // } }',
+    'const value = `literal { ${JSON.stringify({ count: 1 })}`;',
+    'const pattern = /[{}]/;',
+    'const result: number = await work();',
+    'return { count: 1 };',
+  ])('accepts valid snippet: %s', (codeSnippet) => {
+    const result = ASTNodeSchema.parse({
+      id: 'expr_valid', type: 'ExpressionBlock', codeSnippet,
+    });
+    if (result.type !== 'ExpressionBlock') throw new Error('Unexpected node type');
+    assertType<ExpressionBlock>(result);
+    assertType<BaseNode>(result);
+    assertType<ASTNode>(result);
+    expect(result.codeSnippet).toBe(codeSnippet);
+  });
+
+  it('defaults the Pump listener to the documented program address', () => {
+    const result = ASTNodeSchema.parse({
+      id: 'listen_default', type: 'Solana_ListenPumpFun', callbackBody: [],
+    });
+    expect(result).toMatchObject({
+      programAddress: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+    });
+  });
+
   it('applies default values correctly', () => {
     const moduleNode = {
       id: 'mod_defaults',
@@ -243,6 +285,7 @@ describe('ASTNodeSchema', () => {
 
     const result = ASTNodeSchema.parse(complexNode);
     expect(result.type).toBe('ModuleContainer');
+    if (result.type !== 'ModuleContainer') throw new Error('Unexpected node type');
     expect(result.moduleName).toBe('tradingBot');
   });
 });

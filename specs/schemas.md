@@ -62,7 +62,13 @@ Use `z.lazy()` for recursive child arrays (`children: z.lazy(() => z.array(ASTNo
 9. **`SolanaListenPumpFunSchema`**:
    * `type: z.literal('Solana_ListenPumpFun')`
    * `connectionVarName: z.string().default('connection')`
-   * `programAddress: z.string().default('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwpump')`
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:4ed1c33aaf2cea5c3e905402b1fc24ff3c59f2a25449a96c63414c5a08acc60d -->
+
+   * `programAddress: z.string().default('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')`
+
+<!-- /coderabbit-ai-generated:v1 -->
    * `accountInfoParamName: z.string().default('accountInfo')`
    * `callbackBody: z.lazy(() => z.array(ASTNodeSchema))`
 10. **`SolanaSimulatePayloadSchema`**:

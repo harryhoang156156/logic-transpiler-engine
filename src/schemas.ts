@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import ts from 'typescript';
 
 // ---------------------------------------------------------------------------
 // Base Node Properties
@@ -50,10 +51,7 @@ export interface LoopInterval extends BaseNode {
   body: ASTNode[];
 }
 
-export interface ExpressionBlock extends BaseNode {
-  type: 'ExpressionBlock';
-  codeSnippet: string;
-}
+export type ExpressionBlock = z.infer<typeof ExpressionBlockSchema>;
 
 export interface SolanaEstablishConnection extends BaseNode {
   type: 'Solana_EstablishConnection';
@@ -213,7 +211,15 @@ export const LoopIntervalSchema = z.object({
 export const ExpressionBlockSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('ExpressionBlock'),
-  codeSnippet: z.string(),
+  codeSnippet: z.string().refine((snippet) => {
+    // Parse without executing; TypeScript handles braces in literals and comments.
+    const { diagnostics } = ts.transpileModule(snippet, {
+      fileName: 'snippet.ts',
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
+      reportDiagnostics: true,
+    });
+    return !diagnostics?.some((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+  }, 'codeSnippet must contain valid TypeScript syntax with balanced braces'),
 });
 
 // ---------------------------------------------------------------------------
@@ -239,7 +245,7 @@ export const SolanaListenPumpFunSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Solana_ListenPumpFun'),
   connectionVarName: z.string().default('connection'),
-  programAddress: z.string().default('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwpump'),
+  programAddress: z.string().default('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'),
   accountInfoParamName: z.string().default('accountInfo'),
   callbackBody: z.lazy(() => z.array(ASTNodeSchema)),
 });
