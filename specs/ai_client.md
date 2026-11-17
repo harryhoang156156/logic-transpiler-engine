@@ -1,7 +1,7 @@
 # Component Specification: `src/client/ai_client.ts`
 
 ## 1. Objective
-Provide an LLM gateway using the official `openai` SDK configured to point at NVIDIA NIM's OpenAI-compatible endpoint (`https://integrate.api.nvidia.com/v1`). Enforces Structured Outputs (`response_format` JSON Schema) bound directly to Zod schemas so the API physically cannot return malformed JSON.
+Provide an LLM gateway using the official `openai` SDK configured to point at Kilo Gateway's OpenAI-compatible endpoint (`https://api.kilo.ai/api/gateway`), defaulting to the `kilo-auto/free` smart router. Enforces Structured Outputs (`response_format` JSON Schema) bound directly to Zod schemas so the API physically cannot return malformed JSON.
 
 ## 2. Dependencies
 * External: `openai`, `zod`, `zod-to-json-schema`, `dotenv`
@@ -10,9 +10,9 @@ Provide an LLM gateway using the official `openai` SDK configured to point at NV
 ## 3. Required Exports & Architecture
 
 ### A. Configuration & Client Initialization
-* Read `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` (defaulting to `'https://integrate.api.nvidia.com/v1'`), and `LLM_MODEL` (defaulting to `'qwen/qwen3-coder-480b-a35b-instruct'`) from `process.env`.
-* Instantiate `new OpenAI({ apiKey: process.env.NVIDIA_API_KEY, baseURL: process.env.NVIDIA_BASE_URL })`.
-* Throw a clear initialization error if `NVIDIA_API_KEY` is missing when making a live call.
+* Read `KILO_API_KEY`, `KILO_BASE_URL` (defaulting to `'https://api.kilo.ai/api/gateway'`), and `LLM_MODEL` (defaulting to `'kilo-auto/free'`) from `process.env`.
+* Instantiate `new OpenAI({ apiKey: process.env.KILO_API_KEY, baseURL: process.env.KILO_BASE_URL })`.
+* Throw a clear initialization error if `KILO_API_KEY` is missing when making a live call.
 
 ### B. Core Functions
 1. **`generateStructuredOutput<T>(options: { systemInstruction: string; userPrompt: string; schema: z.ZodType<T>; clientOverride?: any }): Promise<T>`**:
