@@ -164,7 +164,7 @@ const BaseNodeProps = {
 // Core Structural Containers
 // ---------------------------------------------------------------------------
 
-export const ModuleContainerSchema: z.ZodType<ModuleContainer> = z.object({
+export const ModuleContainerSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('ModuleContainer'),
   moduleName: z.string(),
@@ -172,7 +172,7 @@ export const ModuleContainerSchema: z.ZodType<ModuleContainer> = z.object({
   children: z.lazy(() => z.array(ASTNodeSchema)),
 });
 
-export const AsyncFunctionBlockSchema: z.ZodType<AsyncFunctionBlock> = z.object({
+export const AsyncFunctionBlockSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('AsyncFunctionBlock'),
   functionName: z.string(),
@@ -182,7 +182,7 @@ export const AsyncFunctionBlockSchema: z.ZodType<AsyncFunctionBlock> = z.object(
   body: z.lazy(() => z.array(ASTNodeSchema)),
 });
 
-export const TryCatchGuardianSchema: z.ZodType<TryCatchGuardian> = z.object({
+export const TryCatchGuardianSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('TryCatchGuardian'),
   tryBranch: z.lazy(() => z.array(ASTNodeSchema)),
@@ -190,7 +190,7 @@ export const TryCatchGuardianSchema: z.ZodType<TryCatchGuardian> = z.object({
   errorVariableName: z.string().default('error'),
 });
 
-export const ConditionalBranchSchema: z.ZodType<ConditionalBranch> = z.object({
+export const ConditionalBranchSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('ConditionalBranch'),
   conditionExpression: z.string(),
@@ -198,7 +198,7 @@ export const ConditionalBranchSchema: z.ZodType<ConditionalBranch> = z.object({
   falseBranch: z.lazy(() => z.array(ASTNodeSchema)).optional(),
 });
 
-export const LoopIntervalSchema: z.ZodType<LoopInterval> = z.object({
+export const LoopIntervalSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('LoopInterval'),
   loopType: z.enum(['while', 'forOf', 'setInterval']),
@@ -210,7 +210,7 @@ export const LoopIntervalSchema: z.ZodType<LoopInterval> = z.object({
 // Loose Token Node
 // ---------------------------------------------------------------------------
 
-export const ExpressionBlockSchema: z.ZodType<ExpressionBlock> = z.object({
+export const ExpressionBlockSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('ExpressionBlock'),
   codeSnippet: z.string(),
@@ -220,7 +220,7 @@ export const ExpressionBlockSchema: z.ZodType<ExpressionBlock> = z.object({
 // Solana, SQLite, Redis & Node.js "Black Box" Library Nodes
 // ---------------------------------------------------------------------------
 
-export const SolanaEstablishConnectionSchema: z.ZodType<SolanaEstablishConnection> = z.object({
+export const SolanaEstablishConnectionSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Solana_EstablishConnection'),
   connectionVarName: z.string().default('connection'),
@@ -228,14 +228,14 @@ export const SolanaEstablishConnectionSchema: z.ZodType<SolanaEstablishConnectio
   commitment: z.enum(['processed', 'confirmed', 'finalized']).default('confirmed'),
 });
 
-export const SolanaParseWalletSchema: z.ZodType<SolanaParseWallet> = z.object({
+export const SolanaParseWalletSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Solana_ParseWallet'),
   keypairVarName: z.string().default('walletKeypair'),
   privateKeyEnvVar: z.string().default('PRIVATE_KEY'),
 });
 
-export const SolanaListenPumpFunSchema: z.ZodType<SolanaListenPumpFun> = z.object({
+export const SolanaListenPumpFunSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Solana_ListenPumpFun'),
   connectionVarName: z.string().default('connection'),
@@ -244,7 +244,7 @@ export const SolanaListenPumpFunSchema: z.ZodType<SolanaListenPumpFun> = z.objec
   callbackBody: z.lazy(() => z.array(ASTNodeSchema)),
 });
 
-export const SolanaSimulatePayloadSchema: z.ZodType<SolanaSimulatePayload> = z.object({
+export const SolanaSimulatePayloadSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Solana_SimulatePayload'),
   connectionVarName: z.string().default('connection'),
@@ -252,21 +252,21 @@ export const SolanaSimulatePayloadSchema: z.ZodType<SolanaSimulatePayload> = z.o
   throwOnError: z.boolean().default(true),
 });
 
-export const FileAppendLogSchema: z.ZodType<FileAppendLog> = z.object({
+export const FileAppendLogSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('File_AppendLog'),
   filePath: z.string().default('logs.txt'),
   messageExpression: z.string(),
 });
 
-export const SqliteInitDatabaseSchema: z.ZodType<SqliteInitDatabase> = z.object({
+export const SqliteInitDatabaseSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Sqlite_InitDatabase'),
   dbVarName: z.string().default('db'),
   dbFilePath: z.string().default('engine.db'),
 });
 
-export const SqliteExecuteWriteSchema: z.ZodType<SqliteExecuteWrite> = z.object({
+export const SqliteExecuteWriteSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Sqlite_ExecuteWrite'),
   dbVarName: z.string().default('db'),
@@ -274,7 +274,7 @@ export const SqliteExecuteWriteSchema: z.ZodType<SqliteExecuteWrite> = z.object(
   paramsArrayExpression: z.string(),
 });
 
-export const SqliteQueryReadSchema: z.ZodType<SqliteQueryRead> = z.object({
+export const SqliteQueryReadSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Sqlite_QueryRead'),
   dbVarName: z.string().default('db'),
@@ -284,14 +284,14 @@ export const SqliteQueryReadSchema: z.ZodType<SqliteQueryRead> = z.object({
   paramsArrayExpression: z.string().default('[]'),
 });
 
-export const RedisInitClientSchema: z.ZodType<RedisInitClient> = z.object({
+export const RedisInitClientSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Redis_InitClient'),
   redisVarName: z.string().default('redis'),
   redisUrlEnvVar: z.string().default('REDIS_URL'),
 });
 
-export const RedisQueuePushSchema: z.ZodType<RedisQueuePush> = z.object({
+export const RedisQueuePushSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Redis_QueuePush'),
   redisVarName: z.string().default('redis'),
@@ -299,7 +299,7 @@ export const RedisQueuePushSchema: z.ZodType<RedisQueuePush> = z.object({
   payloadExpression: z.string(),
 });
 
-export const RedisQueueBlockingPopSchema: z.ZodType<RedisQueueBlockingPop> = z.object({
+export const RedisQueueBlockingPopSchema = z.object({
   ...BaseNodeProps,
   type: z.literal('Redis_QueueBlockingPop'),
   redisVarName: z.string().default('redis'),
@@ -332,7 +332,7 @@ export const ASTNodeSchema: z.ZodType<ASTNode> = z.lazy(() =>
     RedisQueuePushSchema,
     RedisQueueBlockingPopSchema,
   ])
-);
+) as z.ZodType<ASTNode>;
 
 // ---------------------------------------------------------------------------
 // Gap Analysis Schemas
