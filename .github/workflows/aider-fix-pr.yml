@@ -1,0 +1,83 @@
+name: Aider PR Fix Loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Open Pull Request number (e.g., 14)'
+        required: true
+        type: string
+      instructions:
+        description: 'Paste CodeRabbit review comments or fix instructions'
+        required: true
+        type: string
+      overview_file:
+        description: 'Global system overview / rules file path'
+        required: false
+        default: 'architecture_overview.md'
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  fix-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js & Python
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        run: |
+          npm install
+          pip install -q aider-chat
+
+      - name: Checkout Existing PR Branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "Aider Cloud Agent"
+          git config --global user.email "aider-bot@://github.com"
+          gh pr checkout "${{ github.event.inputs.pr_number }}"
+
+      - name: Run Aider Fix Loop
+        env:
+          OPENAI_API_BASE: https://kilo.ai
+          OPENAI_API_KEY: ${{ secrets.KILO_API_KEY }}
+          HF_HUB_DISABLE_TELEMETRY: '1'
+          FIX_INSTRUCTIONS: ${{ github.event.inputs.instructions }}
+        run: |
+          aider \
+            --model openai/kilo-auto/free \
+            --edit-format whole \
+            --no-show-model-warnings \
+            --no-stream \
+            --yes \
+            --auto-commits \
+            --read "${{ github.event.inputs.overview_file }}" \
+            --test-cmd "npm run build && npm run test" \
+            --auto-test \
+            --message "Review the existing code in src/ and tests/ against ${{ github.event.inputs.overview_file }}. Apply the following PR review fixes: $FIX_INSTRUCTIONS. Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
+
+      - name: Verify & Push Fixes to PR
+        run: |
+          npm run build
+          npm run test
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: address PR review feedback"
+          fi
+          git push origin HEAD
