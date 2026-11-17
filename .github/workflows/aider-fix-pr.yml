@@ -11,6 +11,11 @@ on:
         description: 'Paste CodeRabbit review comments or fix instructions'
         required: true
         type: string
+      already_committed_fix_attempt:
+        description: 'Check if another agent (e.g., CodeRabbit) already pushed an unverified fix commit'
+        required: false
+        default: false
+        type: boolean
       overview_file:
         description: 'Global system overview / rules file path'
         required: false
@@ -50,7 +55,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "Aider Cloud Agent"
-          git config --global user.email "aider-bot@users.noreply.github.com"
+          git config --global user.email "aider-bot@://github.com"
           gh pr checkout "${{ github.event.inputs.pr_number }}"
 
       - name: Run Aider Fix Loop
@@ -59,7 +64,14 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.KILO_API_KEY }}
           HF_HUB_DISABLE_TELEMETRY: '1'
           FIX_INSTRUCTIONS: ${{ github.event.inputs.instructions }}
+          PRIOR_ATTEMPT: ${{ github.event.inputs.already_committed_fix_attempt }}
         run: |
+          EXTRA_CONTEXT=""
+          if [ "$PRIOR_ATTEMPT" == "true" ]; then
+            LAST_DIFF=$(git log -n 1 -p -- src/ tests/)
+            EXTRA_CONTEXT="NOTE: Another automated review agent already pushed a tentative fix commit to this branch. Here is the diff of that recent commit:\n$LAST_DIFF\n\nAudit those changes carefully against the review feedback and ${{ github.event.inputs.overview_file }}. Keep what is valid, fix anything incomplete or broken, or rewrite it cleanly if needed."
+          fi
+
           aider \
             --model openai/kilo-auto/free \
             --edit-format whole \
@@ -70,7 +82,7 @@ jobs:
             --read "${{ github.event.inputs.overview_file }}" \
             --test-cmd "npm run build && npm run test" \
             --auto-test \
-            --message "Review the existing code in src/ and tests/ against ${{ github.event.inputs.overview_file }}. Apply the following PR review fixes: $FIX_INSTRUCTIONS. Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
+            --message "Review the existing code in src/ and tests/ against ${{ github.event.inputs.overview_file }}. Apply the following PR review fixes: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
 
       - name: Verify & Push Fixes to PR
         run: |
