@@ -58,7 +58,7 @@ jobs:
           npm install
           pip install -q aider-chat
 
-      - name: Run Aider Fix Loop (Multi-Provider Cascade)
+      - name: Run Aider Fix Loop (Multi-Provider Cascade + Checkpointing)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -70,7 +70,7 @@ jobs:
         run: |
           set -o pipefail
 
-          START_SHA=$(git rev-parse HEAD)
+          CHECKPOINT_SHA=$(git rev-parse HEAD)
 
           EXTRA_CONTEXT=""
           if [ "$PRIOR_ATTEMPT" == "true" ]; then
@@ -115,8 +115,8 @@ jobs:
               continue
             fi
 
-            # Reset tracked changes and untracked files without deleting node_modules/
-            git reset --hard "$START_SHA" >/dev/null
+            # Start cleanly from the latest verified checkpoint
+            git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
 
             unset OPENAI_API_BASE
@@ -144,7 +144,19 @@ jobs:
               2>&1 | tee /tmp/aider.log || true
 
             if grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503" /tmp/aider.log; then
-              echo "::warning::[$PROVIDER] $MODEL hit rate/token limit or failed. Resetting and cooling down 10s..."
+              # Discard any uncommitted half-edits, then inspect any new commits made before the error
+              git reset --hard HEAD >/dev/null
+              git clean -f >/dev/null
+              NEW_SHA=$(git rev-parse HEAD)
+
+              if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
+                echo "::notice::[$PROVIDER] $MODEL hit a rate limit, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
+                CHECKPOINT_SHA="$NEW_SHA"
+              else
+                echo "::warning::[$PROVIDER] $MODEL hit a rate limit with unverified changes. Rolling back to checkpoint $CHECKPOINT_SHA..."
+                git reset --hard "$CHECKPOINT_SHA" >/dev/null
+                git clean -f >/dev/null
+              fi
               sleep 10
             else
               echo "Successfully completed Aider loop via [$PROVIDER] $MODEL"
@@ -154,7 +166,7 @@ jobs:
           done
 
           if [ "$SUCCESS" != "true" ]; then
-            git reset --hard "$START_SHA" >/dev/null
+            git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
             echo "::error::All provider tiers hit rate/token limits or failed. Wait a few minutes and re-run."
             exit 1
