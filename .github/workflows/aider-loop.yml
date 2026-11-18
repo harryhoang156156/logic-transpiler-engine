@@ -20,7 +20,7 @@ permissions:
 jobs:
   build-and-verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -55,7 +55,6 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           KILO_KEY: ${{ secrets.KILO_API_KEY }}
           HF_HUB_DISABLE_TELEMETRY: '1'
-          LITELLM_NUM_RETRIES: '1'
           OVERVIEW_FILE: ${{ github.event.inputs.overview_file }}
           SPEC_FILE: ${{ github.event.inputs.spec_file }}
         run: |
