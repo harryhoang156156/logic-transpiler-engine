@@ -96,82 +96,90 @@ jobs:
           )
 
           SUCCESS=false
-          for ENTRY in "${CANDIDATES[@]}"; do
-            PROVIDER="${ENTRY%%|*}"
-            MODEL="${ENTRY#*|}"
-
-            if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
-              echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
-              continue
-            fi
-            if [ "$PROVIDER" == "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-              echo "Skipping [$PROVIDER] $MODEL (GROQ_API_KEY not set)"
-              continue
-            fi
-            if [ "$PROVIDER" == "kilo" ] && [ -z "$KILO_KEY" ]; then
-              echo "Skipping [$PROVIDER] $MODEL (KILO_API_KEY not set)"
-              continue
+          for PASS in 1 2; do
+            if [ "$PASS" -eq 2 ]; then
+              echo "::notice::Pass 1 hit provider burst limits. Waiting 65s for per-minute rate limit buckets to reset before Pass 2..."
+              sleep 65
             fi
 
-            git reset --hard "$CHECKPOINT_SHA" >/dev/null
-            git clean -f >/dev/null
+            for ENTRY in "${CANDIDATES[@]}"; do
+              PROVIDER="${ENTRY%%|*}"
+              MODEL="${ENTRY#*|}"
 
-            unset OPENAI_API_BASE
-            unset OPENAI_API_KEY
-            if [ "$PROVIDER" == "kilo" ]; then
-              export OPENAI_API_BASE="https://kilo.ai"
-              export OPENAI_API_KEY="$KILO_KEY"
-            fi
+              if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
+                echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
+                continue
+              fi
+              if [ "$PROVIDER" == "groq" ] && [ -z "$GROQ_API_KEY" ]; then
+                echo "Skipping [$PROVIDER] $MODEL (GROQ_API_KEY not set)"
+                continue
+              fi
+              if [ "$PROVIDER" == "kilo" ] && [ -z "$KILO_KEY" ]; then
+                echo "Skipping [$PROVIDER] $MODEL (KILO_API_KEY not set)"
+                continue
+              fi
 
-            echo "=================================================="
-            echo "Attempting Aider [$PROVIDER] -> $MODEL"
-            echo "=================================================="
-
-            aider \
-              --model "$MODEL" \
-              --edit-format whole \
-              --no-show-model-warnings \
-              --no-stream \
-              --yes \
-              --auto-commits \
-              "${READ_FLAGS[@]}" \
-              --test-cmd "npm run build && npm run test" \
-              --auto-test \
-              --message "$PROMPT" \
-              2>&1 | tee /tmp/aider.log || true
-
-            # Stage any leftover edits so we can evaluate the exact state
-            git add -A
-            if ! git diff --cached --quiet; then
-              git commit -m "chore: checkpoint aider progress" >/dev/null
-            fi
-            NEW_SHA=$(git rev-parse HEAD)
-
-            # Verify: no API/rate errors AND build + tests pass
-            if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
-               && npm run build >/dev/null 2>&1 \
-               && npm run test >/dev/null 2>&1; then
-              echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
-              SUCCESS=true
-              break
-            fi
-
-            # Otherwise check if partial progress still passes build & tests
-            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
-              echo "::notice::[$PROVIDER] $MODEL stopped early, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
-              CHECKPOINT_SHA="$NEW_SHA"
-            else
-              echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
               git reset --hard "$CHECKPOINT_SHA" >/dev/null
               git clean -f >/dev/null
+
+              unset OPENAI_API_BASE
+              unset OPENAI_API_KEY
+              if [ "$PROVIDER" == "kilo" ]; then
+                export OPENAI_API_BASE="https://kilo.ai"
+                export OPENAI_API_KEY="$KILO_KEY"
+              fi
+
+              echo "=================================================="
+              echo "[Pass $PASS] Attempting Aider [$PROVIDER] -> $MODEL"
+              echo "=================================================="
+
+              aider \
+                --model "$MODEL" \
+                --edit-format whole \
+                --no-show-model-warnings \
+                --no-stream \
+                --yes \
+                --auto-commits \
+                "${READ_FLAGS[@]}" \
+                --test-cmd "npm run build && npm run test" \
+                --auto-test \
+                --message "$PROMPT" \
+                2>&1 | tee /tmp/aider.log || true
+
+              git add -A
+              if ! git diff --cached --quiet; then
+                git commit -m "chore: checkpoint aider progress" >/dev/null
+              fi
+              NEW_SHA=$(git rev-parse HEAD)
+
+              if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
+                 && npm run build >/dev/null 2>&1 \
+                 && npm run test >/dev/null 2>&1; then
+                echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
+                SUCCESS=true
+                break
+              fi
+
+              if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
+                echo "::notice::[$PROVIDER] $MODEL stopped early, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
+                CHECKPOINT_SHA="$NEW_SHA"
+              else
+                echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
+                git reset --hard "$CHECKPOINT_SHA" >/dev/null
+                git clean -f >/dev/null
+              fi
+              sleep 10
+            done
+
+            if [ "$SUCCESS" == "true" ]; then
+              break
             fi
-            sleep 10
           done
 
           if [ "$SUCCESS" != "true" ]; then
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-            echo "::error::All provider tiers hit rate/token limits or failed. Wait a few minutes and re-run."
+            echo "::error::All provider tiers hit rate/token limits or failed across both passes. Wait a few minutes and re-run."
             exit 1
           fi
 
