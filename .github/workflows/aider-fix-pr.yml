@@ -75,10 +75,7 @@ jobs:
           EXTRA_CONTEXT=""
           if [ "$PRIOR_ATTEMPT" == "true" ]; then
             LAST_DIFF=$(git log -n 1 -p -- src/ tests/)
-            EXTRA_CONTEXT="NOTE: Another automated review agent already pushed a tentative fix commit to this branch. Here is the diff of that recent commit:
-          $LAST_DIFF
-
-          Audit those changes carefully against the review feedback and $OVERVIEW_FILE. Keep what is valid, fix anything incomplete or broken, or rewrite it cleanly if needed."
+            EXTRA_CONTEXT=$(printf "NOTE: Another automated review agent already pushed a tentative fix commit to this branch. Here is the diff of that recent commit:\n%s\n\nAudit those changes carefully against the review feedback and %s. Keep what is valid, fix anything incomplete or broken, or rewrite it cleanly if needed." "$LAST_DIFF" "$OVERVIEW_FILE")
           fi
 
           PROMPT="Review the existing code in src/ and tests/ against $OVERVIEW_FILE. Apply the following PR review fixes: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
@@ -101,7 +98,6 @@ jobs:
             PROVIDER="${ENTRY%%|*}"
             MODEL="${ENTRY#*|}"
 
-            # Skip provider instantly if its secret key is not configured
             if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
               echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
               continue
@@ -115,7 +111,6 @@ jobs:
               continue
             fi
 
-            # Start cleanly from the latest verified checkpoint
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
 
@@ -143,26 +138,32 @@ jobs:
               --message "$PROMPT" \
               2>&1 | tee /tmp/aider.log || true
 
-            if grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503" /tmp/aider.log; then
-              # Discard any uncommitted half-edits, then inspect any new commits made before the error
-              git reset --hard HEAD >/dev/null
-              git clean -f >/dev/null
-              NEW_SHA=$(git rev-parse HEAD)
+            # Stage any leftover edits so we can evaluate the exact state
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "chore: checkpoint aider progress" >/dev/null
+            fi
+            NEW_SHA=$(git rev-parse HEAD)
 
-              if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
-                echo "::notice::[$PROVIDER] $MODEL hit a rate limit, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
-                CHECKPOINT_SHA="$NEW_SHA"
-              else
-                echo "::warning::[$PROVIDER] $MODEL hit a rate limit with unverified changes. Rolling back to checkpoint $CHECKPOINT_SHA..."
-                git reset --hard "$CHECKPOINT_SHA" >/dev/null
-                git clean -f >/dev/null
-              fi
-              sleep 10
-            else
-              echo "Successfully completed Aider loop via [$PROVIDER] $MODEL"
+            # Verify: no API/rate errors AND build + tests pass
+            if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
+               && npm run build >/dev/null 2>&1 \
+               && npm run test >/dev/null 2>&1; then
+              echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
               SUCCESS=true
               break
             fi
+
+            # Otherwise check if partial progress still passes build & tests
+            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
+              echo "::notice::[$PROVIDER] $MODEL stopped early, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
+              CHECKPOINT_SHA="$NEW_SHA"
+            else
+              echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
+              git reset --hard "$CHECKPOINT_SHA" >/dev/null
+              git clean -f >/dev/null
+            fi
+            sleep 10
           done
 
           if [ "$SUCCESS" != "true" ]; then
