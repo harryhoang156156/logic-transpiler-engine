@@ -189,12 +189,13 @@ jobs:
               fi
               NEW_SHA=$(git rev-parse HEAD)
 
-              if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
-                 && npm run build >/dev/null 2>&1 \
-                 && npm run test >/dev/null 2>&1; then
-                echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
-                SUCCESS=true
-                break
+              if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|valid model ID|BadRequestError|400 Bad Request|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
+               && [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
+               && npm run build >/dev/null 2>&1 \
+               && npm run test >/dev/null 2>&1; then
+              echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
+              SUCCESS=true
+              break
               fi
 
               if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
