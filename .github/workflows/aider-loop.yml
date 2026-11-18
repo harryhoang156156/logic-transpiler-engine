@@ -69,10 +69,12 @@ jobs:
           fi
 
           CANDIDATES=(
+            "openrouter|openrouter/z-ai/glm-5:free"
             "openrouter|openrouter/free"
-            "groq|groq/openai/gpt-oss-120b"
-            "groq|groq/qwen/qwen3-32b"
-            "kilo|openai/qwen/qwen3-coder:free"
+            "groq|groq/meta-llama/llama-4-scout-17b-16e-instruct"
+            "groq|groq/llama-3.3-70b-versatile"
+            "kilo|openai/particle-ai/particle-1:free"
+            "kilo|openai/cohere/north-mini-code:free"
             "kilo|openai/kilo-auto/free"
           )
 
