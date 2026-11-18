@@ -58,7 +58,7 @@ jobs:
           npm install
           pip install -q aider-chat
 
-      - name: Run Aider Fix Loop (Multi-Provider Cascade + Checkpointing)
+      - name: Run Aider Fix Loop (Live Auto-Discovery Cascade)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -85,15 +85,65 @@ jobs:
             READ_FLAGS+=(--read "$OVERVIEW_FILE")
           fi
 
-          CANDIDATES=(
-            "openrouter|openrouter/z-ai/glm-5:free"
-            "openrouter|openrouter/free"
-            "groq|groq/meta-llama/llama-4-scout-17b-16e-instruct"
-            "groq|groq/llama-3.3-70b-versatile"
-            "kilo|openai/particle-ai/particle-1:free"
-            "kilo|openai/cohere/north-mini-code:free"
-            "kilo|openai/kilo-auto/free"
-          )
+          # Dynamically fetch live :free coding models from OpenRouter & Kilo so slugs never go 404
+          mapfile -t CANDIDATES < <(python3 -c '
+          import os, urllib.request, json
+
+          def fetch_free(url, headers, prefix, fallback):
+              try:
+                  req = urllib.request.Request(url, headers=headers)
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      data = json.loads(resp.read().decode()).get("data", [])
+                  preferred = ("code", "deepseek", "qwen", "glm", "nemotron", "particle", "dots", "ling")
+                  scored = []
+                  for m in data:
+                      mid = m.get("id", "")
+                      pricing = m.get("pricing") or {}
+                      is_free = mid.endswith(":free") or (str(pricing.get("prompt")) == "0" and str(pricing.get("completion")) == "0")
+                      if is_free and "image" not in mid and "audio" not in mid and "guard" not in mid and mid != "openrouter/free":
+                          score = 0 if any(k in mid.lower() for k in preferred) else 1
+                          scored.append((score, mid))
+                  scored.sort()
+                  picks = [f"{prefix}|{mid}" for _, mid in scored[:4]]
+                  return picks if picks else fallback
+              except Exception:
+                  return fallback
+
+          out = []
+          if os.environ.get("OPENROUTER_API_KEY"):
+              out.extend(fetch_free(
+                  "https://openrouter.ai",
+                  {"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]},
+                  "openrouter",
+                  ["openrouter|openrouter/cohere/north-mini-code:free", "openrouter|openrouter/nvidia/nemotron-3-ultra:free"]
+              ))
+              out = [x.replace("openrouter|", "openrouter|openrouter/") if not x.startswith("openrouter|openrouter/") else x for x in out]
+
+          if os.environ.get("GROQ_API_KEY"):
+              out.extend([
+                  "groq|groq/qwen/qwen3.8-27b",
+                  "groq|groq/openai/gpt-oss-120b",
+                  "groq|groq/openai/gpt-oss-20b"
+              ])
+
+          if os.environ.get("KILO_KEY"):
+              kilo_picks = fetch_free(
+                  "https://kilo.ai",
+                  {"Authorization": "Bearer " + os.environ["KILO_KEY"]},
+                  "kilo",
+                  ["kilo|openai/kilo-auto/free"]
+              )
+              kilo_picks = [x.replace("kilo|", "kilo|openai/") if not x.startswith("kilo|openai/") else x for x in kilo_picks]
+              if "kilo|openai/kilo-auto/free" not in kilo_picks:
+                  kilo_picks.append("kilo|openai/kilo-auto/free")
+              out.extend(kilo_picks)
+
+          for item in out:
+              print(item)
+          ')
+
+          echo "Discovered live model cascade:"
+          printf '  - %s\n' "${CANDIDATES[@]}"
 
           SUCCESS=false
           for PASS in 1 2; do
@@ -105,19 +155,6 @@ jobs:
             for ENTRY in "${CANDIDATES[@]}"; do
               PROVIDER="${ENTRY%%|*}"
               MODEL="${ENTRY#*|}"
-
-              if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
-                echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
-                continue
-              fi
-              if [ "$PROVIDER" == "groq" ] && [ -z "$GROQ_API_KEY" ]; then
-                echo "Skipping [$PROVIDER] $MODEL (GROQ_API_KEY not set)"
-                continue
-              fi
-              if [ "$PROVIDER" == "kilo" ] && [ -z "$KILO_KEY" ]; then
-                echo "Skipping [$PROVIDER] $MODEL (KILO_API_KEY not set)"
-                continue
-              fi
 
               git reset --hard "$CHECKPOINT_SHA" >/dev/null
               git clean -f >/dev/null
@@ -152,7 +189,7 @@ jobs:
               fi
               NEW_SHA=$(git rev-parse HEAD)
 
-              if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
+              if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
                  && npm run build >/dev/null 2>&1 \
                  && npm run test >/dev/null 2>&1; then
                 echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
