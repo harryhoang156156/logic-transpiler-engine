@@ -101,6 +101,20 @@ jobs:
             PROVIDER="${ENTRY%%|*}"
             MODEL="${ENTRY#*|}"
 
+            # Skip provider instantly if its secret key is not configured
+            if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
+              echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
+              continue
+            fi
+            if [ "$PROVIDER" == "groq" ] && [ -z "$GROQ_API_KEY" ]; then
+              echo "Skipping [$PROVIDER] $MODEL (GROQ_API_KEY not set)"
+              continue
+            fi
+            if [ "$PROVIDER" == "kilo" ] && [ -z "$KILO_KEY" ]; then
+              echo "Skipping [$PROVIDER] $MODEL (KILO_API_KEY not set)"
+              continue
+            fi
+
             # Reset tracked changes and untracked files without deleting node_modules/
             git reset --hard "$START_SHA" >/dev/null
             git clean -f >/dev/null
@@ -129,8 +143,8 @@ jobs:
               --message "$PROMPT" \
               2>&1 | tee /tmp/aider.log || true
 
-            if grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503" /tmp/aider.log; then
-              echo "::warning::[$PROVIDER] $MODEL hit rate/token limit, missing key, or is unavailable. Resetting and cooling down 10s..."
+            if grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503" /tmp/aider.log; then
+              echo "::warning::[$PROVIDER] $MODEL hit rate/token limit or failed. Resetting and cooling down 10s..."
               sleep 10
             else
               echo "Successfully completed Aider loop via [$PROVIDER] $MODEL"
