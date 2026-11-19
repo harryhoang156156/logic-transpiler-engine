@@ -33,9 +33,13 @@ describe('prompts', () => {
     const result = buildGenerationPrompt(brief);
     expect(result).toContain('User Intent:');
     expect(result).toContain(brief);
+    expect(result).toContain('\n\nUser Intent:\n');
+    expect(result).not.toContain('\\n');
     const resultWithContext = buildGenerationPrompt(brief, 'existing node');
     expect(resultWithContext).toContain('Existing Context Nodes:');
     expect(resultWithContext).toContain('existing node');
+    expect(resultWithContext).toContain('\n\nExisting Context Nodes:\n');
+    expect(resultWithContext).not.toContain('\\n');
   });
 
   it('buildAuditPrompt formats existingAstJson and featureBrief', () => {
@@ -46,6 +50,9 @@ describe('prompts', () => {
     expect(result).toContain(ast);
     expect(result).toContain('Feature Brief:');
     expect(result).toContain(brief);
+    expect(result).toContain('\n\nExisting AST:\n');
+    expect(result).toContain('\n\nFeature Brief:\n');
+    expect(result).not.toContain('\\n');
   });
 
   it('buildCorrectionPrompt formats brokenAstJson and compilerErrors', () => {
@@ -57,5 +64,9 @@ describe('prompts', () => {
     expect(result).toContain('Compiler Errors:');
     expect(result).toContain('Error 1');
     expect(result).toContain('Error 2');
+    expect(result).toContain('\n\nBroken AST:\n');
+    expect(result).toContain('\n\nCompiler Errors:\n');
+    expect(result).toContain('Error 1\nError 2');
+    expect(result).not.toContain('\\n');
   });
 });
