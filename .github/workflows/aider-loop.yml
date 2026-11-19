@@ -49,10 +49,9 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Run Aider Self-Healing Loop (Live Auto-Discovery Cascade)
+      - name: Run Aider Self-Healing Loop (OpenRouter -> Kilo Auto)
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           KILO_KEY: ${{ secrets.KILO_API_KEY }}
           HF_HUB_DISABLE_TELEMETRY: '1'
           LITELLM_NUM_RETRIES: '1'
@@ -69,70 +68,24 @@ jobs:
             READ_FLAGS+=(--read "$OVERVIEW_FILE")
           fi
 
-          # Dynamically fetch live :free coding models from OpenRouter & Kilo so slugs never go 404
-          mapfile -t CANDIDATES < <(python3 -c '
-          import os, urllib.request, json
-
-          def fetch_free(url, headers, prefix, fallback):
-              try:
-                  req = urllib.request.Request(url, headers=headers)
-                  with urllib.request.urlopen(req, timeout=10) as resp:
-                      data = json.loads(resp.read().decode()).get("data", [])
-                  preferred = ("code", "deepseek", "qwen", "glm", "nemotron", "particle", "dots", "ling")
-                  scored = []
-                  for m in data:
-                      mid = m.get("id", "")
-                      pricing = m.get("pricing") or {}
-                      is_free = mid.endswith(":free") or (str(pricing.get("prompt")) == "0" and str(pricing.get("completion")) == "0")
-                      if is_free and "image" not in mid and "audio" not in mid and "guard" not in mid and mid != "openrouter/free":
-                          score = 0 if any(k in mid.lower() for k in preferred) else 1
-                          scored.append((score, mid))
-                  scored.sort()
-                  picks = [f"{prefix}|{mid}" for _, mid in scored[:4]]
-                  return picks if picks else fallback
-              except Exception:
-                  return fallback
-
-          out = []
-          if os.environ.get("OPENROUTER_API_KEY"):
-              out.extend(fetch_free(
-                  "https://openrouter.ai",
-                  {"Authorization": "Bearer " + os.environ["OPENROUTER_API_KEY"]},
-                  "openrouter",
-                  ["openrouter|openrouter/cohere/north-mini-code:free", "openrouter|openrouter/nvidia/nemotron-3-ultra:free"]
-              ))
-              out = [x.replace("openrouter|", "openrouter|openrouter/") if not x.startswith("openrouter|openrouter/") else x for x in out]
-
-          if os.environ.get("GROQ_API_KEY"):
-              out.extend([
-                  "groq|groq/qwen/qwen3.8-27b",
-                  "groq|groq/openai/gpt-oss-120b",
-                  "groq|groq/openai/gpt-oss-20b"
-              ])
-
-          if os.environ.get("KILO_KEY"):
-              kilo_picks = fetch_free(
-                  "https://kilo.ai",
-                  {"Authorization": "Bearer " + os.environ["KILO_KEY"]},
-                  "kilo",
-                  ["kilo|openai/kilo-auto/free"]
-              )
-              kilo_picks = [x.replace("kilo|", "kilo|openai/") if not x.startswith("kilo|openai/") else x for x in kilo_picks]
-              if "kilo|openai/kilo-auto/free" not in kilo_picks:
-                  kilo_picks.append("kilo|openai/kilo-auto/free")
-              out.extend(kilo_picks)
-
-          for item in out:
-              print(item)
-          ')
-
-          echo "Discovered live model cascade:"
-          printf '  - %s\n' "${CANDIDATES[@]}"
+          CANDIDATES=(
+            "openrouter|openrouter/free"
+            "kilo|openai/kilo-auto/free"
+          )
 
           SUCCESS=false
           for ENTRY in "${CANDIDATES[@]}"; do
             PROVIDER="${ENTRY%%|*}"
             MODEL="${ENTRY#*|}"
+
+            if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
+              echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
+              continue
+            fi
+            if [ "$PROVIDER" == "kilo" ] && [ -z "$KILO_KEY" ]; then
+              echo "Skipping [$PROVIDER] $MODEL (KILO_API_KEY not set)"
+              continue
+            fi
 
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
@@ -151,6 +104,7 @@ jobs:
             aider \
               --model "$MODEL" \
               --edit-format whole \
+              --map-tokens 1024 \
               --no-show-model-warnings \
               --no-stream \
               --yes \
@@ -171,7 +125,7 @@ jobs:
                && [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
                && npm run build >/dev/null 2>&1 \
                && npm run test >/dev/null 2>&1; then
-              echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
+              echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL"
               SUCCESS=true
               break
             fi
@@ -184,13 +138,13 @@ jobs:
               git reset --hard "$CHECKPOINT_SHA" >/dev/null
               git clean -f >/dev/null
             fi
-            sleep 3
+            sleep 5
           done
 
           if [ "$SUCCESS" != "true" ]; then
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-            echo "::error::All provider tiers hit rate/token limits or failed. Wait a few minutes and re-run."
+            echo "::error::Both OpenRouter and Kilo hit rate limits or failed. Wait a few minutes and re-run."
             exit 1
           fi
 
