@@ -69,7 +69,10 @@ jobs:
           fi
 
           CANDIDATES=(
-            "openrouter|openrouter/free"
+            "openrouter|openrouter/particle-ai/particle-1:free"
+            "openrouter|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+            "openrouter|openrouter/nvidia/nemotron-3.5-super-vl:free"
+            "openrouter|openrouter/baidu/ernie-5.5-flash-preview:free"
             "kilo|openai/kilo-auto/free"
           )
 
@@ -105,6 +108,7 @@ jobs:
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
+              --no-detect-urls \
               --no-show-model-warnings \
               --no-stream \
               --yes \
@@ -144,7 +148,7 @@ jobs:
           if [ "$SUCCESS" != "true" ]; then
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-            echo "::error::Both OpenRouter and Kilo hit rate limits or failed. Wait a few minutes and re-run."
+            echo "::error::All models hit rate limits or failed. Wait a few minutes and re-run."
             exit 1
           fi
 
