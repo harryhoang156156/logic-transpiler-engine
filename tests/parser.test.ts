@@ -66,16 +66,24 @@ const CONFIG = { retries: 3 };
     expect(Array.isArray(processWallet.body)).toBe(true);
 
     // Check nested structure inside processWallet
-    // Should have: TryCatchGuardian
-    expect(processWallet.body.length).toBe(1);
-    const tryCatch = processWallet.body[0];
+    // Should have 2 children: ExpressionBlock (connection) + TryCatchGuardian
+    expect(processWallet.body.length).toBe(2);
+    
+    // First child in body: ExpressionBlock for connection declaration
+    const connectionDecl = processWallet.body[0];
+    expect(connectionDecl.type).toBe('ExpressionBlock');
+    expect(connectionDecl.codeSnippet).toContain('const connection = new Connection');
+    
+    // Second child in body: TryCatchGuardian
+    const tryCatch = processWallet.body[1];
     expect(tryCatch.type).toBe('TryCatchGuardian');
     expect(tryCatch.tryBranch.length).toBeGreaterThan(0);
     expect(tryCatch.catchBranch.length).toBeGreaterThan(0);
 
-    // Inside tryBranch: ExpressionBlock (connection), ConditionalBranch, LoopInterval
+    // Inside tryBranch: ExpressionBlock (wallet), ConditionalBranch, LoopInterval
     const tryBranch = tryCatch.tryBranch;
     expect(tryBranch[0].type).toBe('ExpressionBlock');
+    expect(tryBranch[0].codeSnippet).toContain('const wallet = parseWallet');
     expect(tryBranch[1].type).toBe('ConditionalBranch');
     expect(tryBranch[2].type).toBe('LoopInterval');
 
