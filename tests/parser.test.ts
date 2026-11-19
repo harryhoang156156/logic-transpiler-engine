@@ -212,4 +212,97 @@ const y = 2;
       expect(child.codeSnippet).not.toMatch(/;\s*$/);
     }
   });
+
+  it('should preserve functions with default parameters as ExpressionBlock', () => {
+    const code = `
+function greet(name: string = 'world') {
+  return name;
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const fn = ast.children[0];
+    expect(fn.type).toBe('ExpressionBlock');
+    expect(fn.codeSnippet).toContain('function greet');
+    expect(fn.codeSnippet).toContain("name: string = 'world'");
+  });
+
+  it('should preserve functions with optional parameters as ExpressionBlock', () => {
+    const code = `
+function greet(name?: string) {
+  return name;
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const fn = ast.children[0];
+    expect(fn.type).toBe('ExpressionBlock');
+    expect(fn.codeSnippet).toContain('name?: string');
+  });
+
+  it('should preserve functions with rest parameters as ExpressionBlock', () => {
+    const code = `
+function greet(...names: string[]) {
+  return names;
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const fn = ast.children[0];
+    expect(fn.type).toBe('ExpressionBlock');
+    expect(fn.codeSnippet).toContain('...names: string[]');
+  });
+
+  it('should preserve functions with type parameters as ExpressionBlock', () => {
+    const code = `
+function identity<T>(value: T): T {
+  return value;
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const fn = ast.children[0];
+    expect(fn.type).toBe('ExpressionBlock');
+    expect(fn.codeSnippet).toContain('function identity<T>');
+  });
+
+  it('should preserve for-await-of loops as ExpressionBlock', () => {
+    const code = `
+async function run() {
+  for await (const item of items) {
+    console.log(item);
+  }
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const fn = ast.children[0];
+    expect(fn.type).toBe('AsyncFunctionBlock');
+    expect(fn.body.length).toBe(1);
+    const loop = fn.body[0];
+    expect(loop.type).toBe('ExpressionBlock');
+    expect(loop.codeSnippet).toContain('for await');
+  });
+
+  it('should preserve try/finally statements as ExpressionBlock', () => {
+    const code = `
+try {
+  risky();
+} finally {
+  cleanup();
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const stmt = ast.children[0];
+    expect(stmt.type).toBe('ExpressionBlock');
+    expect(stmt.codeSnippet).toContain('finally');
+    expect(stmt.codeSnippet).toContain('cleanup()');
+  });
 });

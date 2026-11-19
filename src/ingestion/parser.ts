@@ -19,6 +19,15 @@ function parseParameter(param: ts.ParameterDeclaration, sourceFile: ts.SourceFil
   return { name, tsType };
 }
 
+function hasUnsupportedParameterSyntax(node: ts.FunctionDeclaration): boolean {
+  return node.parameters.some(
+    (param) =>
+      param.initializer !== undefined ||
+      param.questionToken !== undefined ||
+      param.dotDotDotToken !== undefined,
+  );
+}
+
 function parseFunctionDeclaration(node: ts.FunctionDeclaration, sourceFile: ts.SourceFile): ASTNode {
   const isAsync = node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false;
   const functionName = node.name?.getText(sourceFile) ?? 'anonymous';
@@ -191,11 +200,22 @@ function parseStatement(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode 
 
   // Function declarations
   if (ts.isFunctionDeclaration(node)) {
+    // AsyncFunctionBlock cannot represent type parameters or parameter
+    // modifiers (defaults, optional, rest), so preserve those declarations
+    // verbatim as ExpressionBlock nodes.
+    if ((node.typeParameters && node.typeParameters.length > 0) || hasUnsupportedParameterSyntax(node)) {
+      return parseExpressionBlock(node, sourceFile);
+    }
     return parseFunctionDeclaration(node, sourceFile);
   }
 
   // Try statements
   if (ts.isTryStatement(node)) {
+    // TryCatchGuardian has no representation for finally blocks, so preserve
+    // try/finally statements verbatim as ExpressionBlock nodes.
+    if (node.finallyBlock) {
+      return parseExpressionBlock(node, sourceFile);
+    }
     return parseTryStatement(node, sourceFile);
   }
 
@@ -206,6 +226,11 @@ function parseStatement(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode 
 
   // Loop statements
   if (ts.isForOfStatement(node) || ts.isWhileStatement(node)) {
+    // LoopInterval has no representation for asynchronous iteration, so
+    // preserve for-await-of loops verbatim as ExpressionBlock nodes.
+    if (ts.isForOfStatement(node) && node.awaitModifier) {
+      return parseExpressionBlock(node, sourceFile);
+    }
     return parseLoopStatement(node, sourceFile);
   }
 
