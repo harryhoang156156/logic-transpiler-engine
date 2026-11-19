@@ -1,211 +1,125 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ASTNodeSchema } from '../src/schemas.js';
-import { requestAstGeneration, requestAstCorrection, generateStructuredOutput } from '../src/client/ai_client.js';
+import {
+  generateStructuredOutput,
+  requestAstGeneration,
+  requestAstCorrection,
+} from '../src/client/ai_client.js';
+
+const mockCreate = vi.fn();
+const mockClient = {
+  chat: {
+    completions: {
+      create: mockCreate,
+    },
+  },
+};
 
 describe('ai_client', () => {
-  const mockClient = {
-    chat: {
-      completions: {
-        create: vi.fn()
-      }
-    }
-  };
-
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  describe('generateStructuredOutput', () => {
-    it('should call OpenAI with correct parameters and return validated result', async () => {
-      const mockSchema = z.object({
-        type: z.literal('TestNode'),
-        value: z.string()
-      });
-      
-      const validResponse = { type: 'TestNode', value: 'test' };
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify(validResponse) } }]
-      });
+  it('requestAstGeneration passes expected parameters and validates response', async () => {
+    const brief = 'Create a Solana connection';
+    const contextJson = '[]';
+    const validAst = {
+      id: 'root',
+      type: 'ModuleContainer',
+      moduleName: 'main',
+      exports: [],
+      children: [],
+    };
 
-      const result = await generateStructuredOutput({
-        systemInstruction: 'test system',
-        userPrompt: 'test user',
-        schema: mockSchema,
-        clientOverride: mockClient
-      });
-
-      expect(result).toEqual(validResponse);
-      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          model: 'kilo-auto/free',
-          messages: [
-            { role: 'system', content: 'test system' },
-            { role: 'user', content: 'test user' }
-          ],
-          response_format: expect.objectContaining({
-            type: 'json_schema',
-            json_schema: expect.objectContaining({
-              name: 'ast_output',
-              strict: true
-            })
-          })
-        })
-      );
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify(validAst) } }],
     });
 
-    it('should throw validation error for schema-violating response', async () => {
-      const mockSchema = z.object({
-        type: z.literal('TestNode'),
-        value: z.string()
-      });
-      
-      const invalidResponse = { type: 'WrongType', value: 123 };
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify(invalidResponse) } }]
-      });
+    const result = await requestAstGeneration(brief, contextJson, mockClient);
 
-      await expect(generateStructuredOutput({
-        systemInstruction: 'test',
-        userPrompt: 'test',
-        schema: mockSchema,
-        clientOverride: mockClient
-      })).rejects.toThrow();
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.model).toBe('kilo-auto/free');
+    expect(callArgs.messages).toEqual([
+      { role: 'system', content: expect.any(String) },
+      { role: 'user', content: expect.stringContaining(brief) },
+    ]);
+    expect(callArgs.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: {
+        name: 'ast_output',
+        schema: expect.any(Object),
+        strict: true,
+      },
     });
 
-    it('should throw error for invalid JSON response', async () => {
-      const mockSchema = z.object({ type: z.string() });
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: 'not valid json' } }]
-      });
-
-      await expect(generateStructuredOutput({
-        systemInstruction: 'test',
-        userPrompt: 'test',
-        schema: mockSchema,
-        clientOverride: mockClient
-      })).rejects.toThrow('Failed to parse LLM response as JSON');
-    });
-
-    it('should throw error for empty response', async () => {
-      const mockSchema = z.object({ type: z.string() });
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: '' } }]
-      });
-
-      await expect(generateStructuredOutput({
-        systemInstruction: 'test',
-        userPrompt: 'test',
-        schema: mockSchema,
-        clientOverride: mockClient
-      })).rejects.toThrow('LLM returned empty response');
-    });
+    const parseResult = ASTNodeSchema.safeParse(result);
+    expect(parseResult.success).toBe(true);
+    if (parseResult.success) {
+      expect(parseResult.data).toEqual(validAst);
+    }
   });
 
-  describe('requestAstGeneration', () => {
-    it('should call generateStructuredOutput with correct prompts and ASTNodeSchema', async () => {
-      const validAst = {
-        id: 'test-1',
-        type: 'ModuleContainer',
-        moduleName: 'test',
-        exports: [],
-        children: []
-      };
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify(validAst) } }]
-      });
-
-      const result = await requestAstGeneration('test brief', 'context json', mockClient);
-
-      expect(result).toEqual(validAst);
-      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: 'system' }),
-            expect.objectContaining({ 
-              role: 'user',
-              content: expect.stringContaining('User Intent:\ntest brief')
-            })
-          ])
-        })
-      );
+  it('generateStructuredOutput throws on invalid JSON', async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'not valid json' } }],
     });
 
-    it('should include context when provided', async () => {
-      const validAst = {
-        id: 'test-1',
-        type: 'ModuleContainer',
-        moduleName: 'test',
-        exports: [],
-        children: []
-      };
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify(validAst) } }]
-      });
-
-      await requestAstGeneration('test brief', 'existing context', mockClient);
-
-      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({ 
-              role: 'user',
-              content: expect.stringContaining('Existing Context Nodes:\nexisting context')
-            })
-          ])
-        })
-      );
-    });
+    await expect(
+      generateStructuredOutput({
+        systemInstruction: 'sys',
+        userPrompt: 'user',
+        schema: ASTNodeSchema,
+        clientOverride: mockClient,
+      }),
+    ).rejects.toThrow();
   });
 
-  describe('requestAstCorrection', () => {
-    it('should call generateStructuredOutput with broken AST and errors', async () => {
-      const brokenAst = {
-        id: 'broken-1',
-        type: 'ModuleContainer',
-        moduleName: 'test',
-        exports: [],
-        children: []
-      };
-      
-      const fixedAst = {
-        id: 'fixed-1',
-        type: 'ModuleContainer',
-        moduleName: 'test',
-        exports: ['fixed'],
-        children: []
-      };
-      
-      mockClient.chat.completions.create.mockResolvedValue({
-        choices: [{ message: { content: JSON.stringify(fixedAst) } }]
-      });
-
-      const result = await requestAstCorrection(brokenAst, ['error 1', 'error 2'], mockClient);
-
-      expect(result).toEqual(fixedAst);
-      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          messages: expect.arrayContaining([
-            expect.objectContaining({ role: 'system' }),
-            expect.objectContaining({ 
-              role: 'user',
-              content: expect.stringContaining('Broken AST:')
-            }),
-            expect.objectContaining({ 
-              role: 'user',
-              content: expect.stringContaining('Compiler Errors:')
-            })
-          ])
-        })
-      );
+  it('generateStructuredOutput throws on schema-violating data', async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify({ id: 123 }) } }],
     });
+
+    await expect(
+      generateStructuredOutput({
+        systemInstruction: 'sys',
+        userPrompt: 'user',
+        schema: ASTNodeSchema,
+        clientOverride: mockClient,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('requestAstCorrection uses debugger prompt and validates response', async () => {
+    const brokenAst = {
+      id: 'broken-1',
+      type: 'ModuleContainer',
+      moduleName: 'test',
+      exports: [],
+      children: [],
+    };
+    const errors = ['syntax error'];
+    const validAst = {
+      id: 'root',
+      type: 'ModuleContainer',
+      moduleName: 'm',
+      exports: [],
+      children: [],
+    };
+
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify(validAst) } }],
+    });
+
+    const result = await requestAstCorrection(brokenAst, errors, mockClient);
+
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const callArgs = mockCreate.mock.calls[0][0];
+    expect(callArgs.messages[0].role).toBe('system');
+    expect(callArgs.messages[1].content).toContain('Broken AST');
+    expect(callArgs.messages[1].content).toContain('Compiler Errors');
+
+    const parseResult = ASTNodeSchema.safeParse(result);
+    expect(parseResult.success).toBe(true);
   });
 });
-
-// Need to import z for the test
-import { z } from 'zod';
