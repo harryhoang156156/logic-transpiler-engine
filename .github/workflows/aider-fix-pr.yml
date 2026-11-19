@@ -87,7 +87,6 @@ jobs:
 
           PROMPT="Apply the following PR review fixes to the target files: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Follow $OVERVIEW_FILE and dependencies_and_connections.md, preserve .js extensions on relative imports, and update tests if needed. Do not waste turns searching the repository—all target files and dependencies are already loaded in chat. Loop until npm run build and npm run test pass."
 
-          shopt -s globstar nullglob
           READ_FLAGS=()
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
             READ_FLAGS+=(--read "$OVERVIEW_FILE")
@@ -95,12 +94,9 @@ jobs:
           if [ -f "dependencies_and_connections.md" ]; then
             READ_FLAGS+=(--read "dependencies_and_connections.md")
           fi
-          for existing_src in src/**/*.ts; do
-            if [ -f "$existing_src" ]; then
-              READ_FLAGS+=(--read "$existing_src")
-            fi
-          done
-          shopt -u globstar nullglob
+          if [ -f "src/schemas.ts" ]; then
+            READ_FLAGS+=(--read "src/schemas.ts")
+          fi
 
           CANDIDATES=(
             "openrouter|openrouter/particle-ai/particle-1:free"
@@ -141,7 +137,7 @@ jobs:
             aider \
               --model "$MODEL" \
               --edit-format whole \
-              --map-tokens 4096 \
+              --map-tokens 1024 \
               --no-detect-urls \
               --no-show-model-warnings \
               --no-stream \
