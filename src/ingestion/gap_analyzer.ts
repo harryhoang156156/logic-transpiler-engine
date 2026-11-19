@@ -1,4 +1,4 @@
-import { ASTNode, GapAnalysisReport, GapAnalysisReportSchema, GapResolutionItem } from '../schemas.js';
+import { ASTNode, GapAnalysisReport, GapAnalysisReportSchema } from '../schemas.js';
 import { generateStructuredOutput } from '../client/ai_client.js';
 import { SYSTEM_PROMPT_AUDITOR, buildAuditPrompt } from '../client/prompts.js';
 
@@ -7,36 +7,54 @@ import { SYSTEM_PROMPT_AUDITOR, buildAuditPrompt } from '../client/prompts.js';
  */
 function collectNodeIds(node: ASTNode, ids: Set<string> = new Set()): Set<string> {
   ids.add(node.id);
-  
+
   // Recursively collect from children based on node type
   switch (node.type) {
     case 'ModuleContainer':
-    case 'AsyncFunctionBlock':
-    case 'TryCatchGuardian':
-    case 'ConditionalBranch':
-    case 'LoopInterval':
-    case 'Solana_ListenPumpFun':
-      for (const child of node.body ?? node.tryBranch ?? node.trueBranch ?? node.falseBranch ?? node.callbackBody ?? []) {
+      for (const child of node.children) {
         collectNodeIds(child, ids);
       }
-      if (node.type === 'ConditionalBranch' && node.falseBranch) {
+      break;
+    case 'AsyncFunctionBlock':
+      for (const child of node.body) {
+        collectNodeIds(child, ids);
+      }
+      break;
+    case 'TryCatchGuardian':
+      for (const child of node.tryBranch) {
+        collectNodeIds(child, ids);
+      }
+      for (const child of node.catchBranch) {
+        collectNodeIds(child, ids);
+      }
+      break;
+    case 'ConditionalBranch':
+      for (const child of node.trueBranch) {
+        collectNodeIds(child, ids);
+      }
+      if (node.falseBranch) {
         for (const child of node.falseBranch) {
           collectNodeIds(child, ids);
         }
       }
-      if (node.type === 'TryCatchGuardian') {
-        for (const child of node.catchBranch) {
-          collectNodeIds(child, ids);
-        }
+      break;
+    case 'LoopInterval':
+      for (const child of node.body) {
+        collectNodeIds(child, ids);
       }
       break;
-    // Leaf nodes with no children: ExpressionBlock, Solana_EstablishConnection, 
-    // Solana_ParseWallet, Solana_SimulatePayload, File_AppendLog, 
+    case 'Solana_ListenPumpFun':
+      for (const child of node.callbackBody) {
+        collectNodeIds(child, ids);
+      }
+      break;
+    // Leaf nodes with no children: ExpressionBlock, Solana_EstablishConnection,
+    // Solana_ParseWallet, Solana_SimulatePayload, File_AppendLog,
     // Sqlite_InitDatabase, Sqlite_ExecuteWrite, Sqlite_QueryRead,
     // Redis_InitClient, Redis_QueuePush, Redis_QueueBlockingPop
     // have no children to traverse
   }
-  
+
   return ids;
 }
 
@@ -47,12 +65,14 @@ function findNodeById(node: ASTNode, targetId: string): ASTNode | null {
   if (node.id === targetId) {
     return node;
   }
-  
+
   // Recursively search children based on node type
   const children: ASTNode[] = [];
-  
+
   switch (node.type) {
     case 'ModuleContainer':
+      children.push(...node.children);
+      break;
     case 'AsyncFunctionBlock':
       children.push(...node.body);
       break;
@@ -73,14 +93,14 @@ function findNodeById(node: ASTNode, targetId: string): ASTNode | null {
       break;
     // Leaf nodes have no children
   }
-  
+
   for (const child of children) {
     const found = findNodeById(child, targetId);
     if (found) {
       return found;
     }
   }
-  
+
   return null;
 }
 
@@ -96,7 +116,7 @@ export async function analyzeCodeGaps(
   // Build the audit prompt
   const existingAstJson = JSON.stringify(existingAst, null, 2);
   const userPrompt = buildAuditPrompt(existingAstJson, featureBrief);
-  
+
   // Call the LLM to get the gap analysis report
   const report = await generateStructuredOutput({
     systemInstruction: SYSTEM_PROMPT_AUDITOR,
@@ -104,10 +124,10 @@ export async function analyzeCodeGaps(
     schema: GapAnalysisReportSchema,
     clientOverride,
   });
-  
+
   // Verify every returned targetNodeId exists in the rootAst
   const validNodeIds = collectNodeIds(existingAst);
-  
+
   for (const action of report.actions) {
     if (!validNodeIds.has(action.targetNodeId)) {
       throw new Error(
@@ -116,7 +136,7 @@ export async function analyzeCodeGaps(
       );
     }
   }
-  
+
   return report;
 }
 
@@ -129,7 +149,7 @@ export function extractTargetSubgraphs(
   report: GapAnalysisReport
 ): Map<string, ASTNode> {
   const subgraphs = new Map<string, ASTNode>();
-  
+
   for (const action of report.actions) {
     if (action.resolution === 'MUTATE_EXISTING') {
       const node = findNodeById(rootAst, action.targetNodeId);
@@ -144,6 +164,6 @@ export function extractTargetSubgraphs(
       }
     }
   }
-  
+
   return subgraphs;
 }
