@@ -10,7 +10,11 @@ import {
 } from './prompts.js';
 
 const BASE_URL = process.env.KILO_BASE_URL ?? 'https://api.kilo.ai/api/gateway';
-const MODEL = process.env.LLM_MODEL ?? 'kilo-auto/free';
+const DEFAULT_MODEL = 'kilo-auto/free';
+
+function resolveModel(modelOverride?: string): string {
+  return modelOverride ?? process.env.LLM_MODEL ?? DEFAULT_MODEL;
+}
 
 function resolveClient(clientOverride?: any): OpenAI {
   if (clientOverride) {
@@ -34,17 +38,19 @@ export async function generateStructuredOutput<T>({
   userPrompt,
   schema,
   clientOverride,
+  model,
 }: {
   systemInstruction: string;
   userPrompt: string;
   schema: z.ZodType<T>;
   clientOverride?: any;
+  model?: string;
 }): Promise<T> {
   const client = resolveClient(clientOverride);
   const jsonSchema = zodToJsonSchema(schema) as Record<string, unknown>;
 
   const response = await client.chat.completions.create({
-    model: MODEL,
+    model: resolveModel(model),
     messages: [
       { role: 'system', content: systemInstruction },
       { role: 'user', content: userPrompt },
@@ -54,7 +60,10 @@ export async function generateStructuredOutput<T>({
       json_schema: {
         name: 'ast_output',
         schema: jsonSchema,
-        strict: true,
+        // The AST schema is a discriminated union (root anyOf) with optional
+        // properties, which is incompatible with OpenAI strict mode. Disable
+        // strict mode and rely on schema.parse below for validation.
+        strict: false,
       },
     },
   });
@@ -72,6 +81,7 @@ export async function requestAstGeneration(
   brief: string,
   contextJson?: string,
   clientOverride?: any,
+  model?: string,
 ): Promise<ASTNode> {
   const userPrompt = buildGenerationPrompt(brief, contextJson);
   return generateStructuredOutput({
@@ -79,6 +89,7 @@ export async function requestAstGeneration(
     userPrompt,
     schema: ASTNodeSchema,
     clientOverride,
+    model,
   });
 }
 
@@ -86,6 +97,7 @@ export async function requestAstCorrection(
   brokenAst: ASTNode,
   errors: string[],
   clientOverride?: any,
+  model?: string,
 ): Promise<ASTNode> {
   const brokenAstJson = JSON.stringify(brokenAst, null, 2);
   const userPrompt = buildCorrectionPrompt(brokenAstJson, errors);
@@ -94,5 +106,6 @@ export async function requestAstCorrection(
     userPrompt,
     schema: ASTNodeSchema,
     clientOverride,
+    model,
   });
 }

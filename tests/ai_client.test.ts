@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ASTNodeSchema } from '../src/schemas.js';
 import {
   generateStructuredOutput,
@@ -18,6 +18,13 @@ const mockClient = {
 describe('ai_client', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Pin the model so the default-model assertion is deterministic even if
+    // LLM_MODEL is set in the surrounding environment.
+    vi.stubEnv('LLM_MODEL', 'kilo-auto/free');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('requestAstGeneration passes expected parameters and validates response', async () => {
@@ -49,7 +56,7 @@ describe('ai_client', () => {
       json_schema: {
         name: 'ast_output',
         schema: expect.any(Object),
-        strict: true,
+        strict: false,
       },
     });
 
@@ -58,6 +65,25 @@ describe('ai_client', () => {
     if (parseResult.success) {
       expect(parseResult.data).toEqual(validAst);
     }
+  });
+
+  it('requestAstGeneration honors caller-provided model override', async () => {
+    const brief = 'Create a Solana connection';
+    const validAst = {
+      id: 'root',
+      type: 'ModuleContainer',
+      moduleName: 'main',
+      exports: [],
+      children: [],
+    };
+
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: JSON.stringify(validAst) } }],
+    });
+
+    await requestAstGeneration(brief, undefined, mockClient, 'custom-model');
+
+    expect(mockCreate.mock.calls[0][0].model).toBe('custom-model');
   });
 
   it('generateStructuredOutput throws on invalid JSON', async () => {
