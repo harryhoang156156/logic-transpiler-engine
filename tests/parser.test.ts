@@ -289,6 +289,26 @@ async function run() {
     expect(loop.codeSnippet).toContain('for await');
   });
 
+  it('should preserve the terminating semicolon for a for-await loop with an empty body', () => {
+    const code = `
+async function run() {
+  for await (const item of items);
+}
+`;
+
+    const ast = parseTypeScriptCode(code);
+    expect(ast.children.length).toBe(1);
+    const fn = ast.children[0];
+    expect(fn.type).toBe('AsyncFunctionBlock');
+    expect(fn.body.length).toBe(1);
+    const loop = fn.body[0];
+    expect(loop.type).toBe('ExpressionBlock');
+    expect(loop.codeSnippet).toContain('for await');
+    // The terminating semicolon is the loop body itself and must be preserved
+    // so the emitted snippet remains valid TypeScript.
+    expect(loop.codeSnippet).toMatch(/;\s*$/);
+  });
+
   it('should preserve try/finally statements as ExpressionBlock', () => {
     const code = `
 try {

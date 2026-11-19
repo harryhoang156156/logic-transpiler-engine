@@ -181,9 +181,21 @@ function parseLoopStatement(node: ts.ForOfStatement | ts.WhileStatement, sourceF
 
 function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode {
   let codeSnippet = node.getText(sourceFile);
-  
-  // Strip trailing semicolons so ts_emitter.ts can re-apply them cleanly
-  codeSnippet = codeSnippet.replace(/;\s*$/, '');
+
+  // Strip trailing semicolons so ts_emitter.ts can re-apply them cleanly.
+  // Exception: loops with an empty statement body (e.g. `for await (const x of y);`)
+  // use the trailing semicolon as the loop body itself, so it must be preserved.
+  // Ordinary expression semicolon trimming remains unchanged.
+  const isLoopWithEmptyBody =
+    (ts.isForStatement(node) ||
+      ts.isForInStatement(node) ||
+      ts.isForOfStatement(node) ||
+      ts.isWhileStatement(node)) &&
+    ts.isEmptyStatement(node.statement);
+
+  if (!isLoopWithEmptyBody) {
+    codeSnippet = codeSnippet.replace(/;\s*$/, '');
+  }
 
   return {
     id: generateNodeId(),
