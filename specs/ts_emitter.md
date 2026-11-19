@@ -20,6 +20,7 @@ import Database from 'better-sqlite3';
 import { Redis } from 'ioredis';
 dotenv.config();
 ```
+note: Ensure ioredis and better-sqlite3 imports compile cleanly under NodeNext module resolution.
 
 ### B. Core Recursive Function
 **`emitTypeScript(node: ASTNode, indentLevel?: number, includeHeader?: boolean): string`**
