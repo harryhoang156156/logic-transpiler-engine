@@ -61,12 +61,22 @@ jobs:
           set -o pipefail
 
           CHECKPOINT_SHA=$(git rev-parse HEAD)
-          PROMPT="Read $OVERVIEW_FILE and $SPEC_FILE. Create the target TypeScript file in src/ and its Vitest suite in tests/ (importing from 'vitest'). Use .js extensions on relative imports (e.g. '../schemas.js'). Loop until npm run build and npm run test pass."
+          PROMPT="Read $OVERVIEW_FILE, dependencies_and_connections.md, and $SPEC_FILE. Create the target TypeScript file in src/ and its Vitest suite in tests/ (importing from 'vitest'). Use .js extensions on relative imports (e.g. '../schemas.js'). Loop until npm run build and npm run test pass."
 
+          shopt -s globstar nullglob
           READ_FLAGS=(--read "$SPEC_FILE")
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
             READ_FLAGS+=(--read "$OVERVIEW_FILE")
           fi
+          if [ -f "dependencies_and_connections.md" ]; then
+            READ_FLAGS+=(--read "dependencies_and_connections.md")
+          fi
+          for existing_src in src/**/*.ts; do
+            if [ -f "$existing_src" ]; then
+              READ_FLAGS+=(--read "$existing_src")
+            fi
+          done
+          shopt -u globstar nullglob
 
           CANDIDATES=(
             "openrouter|openrouter/particle-ai/particle-1:free"
@@ -107,7 +117,7 @@ jobs:
             aider \
               --model "$MODEL" \
               --edit-format whole \
-              --map-tokens 1024 \
+              --map-tokens 4096 \
               --no-detect-urls \
               --no-show-model-warnings \
               --no-stream \
