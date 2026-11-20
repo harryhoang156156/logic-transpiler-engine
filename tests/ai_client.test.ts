@@ -341,6 +341,7 @@ describe('generateStructuredOutput', () => {
     const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
     // items should be optional (wrapped in anyOf with null)
     expect(jsonSchema.required).toContain('items');
+    // The items property is wrapped in anyOf with null
     expect(jsonSchema.properties.items).toEqual(
       expect.objectContaining({
         anyOf: expect.arrayContaining([
@@ -349,7 +350,7 @@ describe('generateStructuredOutput', () => {
             items: expect.objectContaining({
               type: 'object',
               properties: expect.objectContaining({
-                id: { type: 'integer' },
+                id: { type: 'number' }, // zod-to-json-schema outputs 'number' for z.number()
                 label: expect.objectContaining({
                   anyOf: expect.arrayContaining([
                     { type: 'string' },
@@ -393,11 +394,14 @@ describe('generateStructuredOutput', () => {
     const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
     // children should be in required (strict mode) and wrapped in anyOf with null
     expect(jsonSchema.required).toContain('children');
-    // The anyOf should contain the $ref and null
+    // The anyOf should contain the array with $ref in items and null
     expect(jsonSchema.properties.children).toEqual(
       expect.objectContaining({
         anyOf: expect.arrayContaining([
-          expect.objectContaining({ $ref: expect.any(String) }),
+          expect.objectContaining({
+            type: 'array',
+            items: expect.objectContaining({ $ref: expect.any(String) }),
+          }),
           { type: 'null' },
         ]),
       })
