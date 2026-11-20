@@ -105,10 +105,12 @@ function enforceStrictJsonSchema(node: any): any {
     const strictProps: Record<string, any> = {};
     for (const key of allKeys) {
       const propSchema = result.properties[key];
+      // Recursively enforce strict schema on nested object properties first
+      const strictPropSchema = enforceStrictJsonSchema(propSchema);
       if (originalRequired.includes(key)) {
-        strictProps[key] = propSchema;
+        strictProps[key] = strictPropSchema;
       } else {
-        strictProps[key] = { anyOf: [propSchema, { type: 'null' }] };
+        strictProps[key] = { anyOf: [strictPropSchema, { type: 'null' }] };
       }
     }
     result.properties = strictProps;
