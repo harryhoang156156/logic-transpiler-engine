@@ -170,4 +170,4 @@ describe('requestAstCorrection', () => {
     expect(result).toEqual(astNode);
     expect(createMock).toHaveBeenCalledTimes(1);
   });
-}
+});
