@@ -51,37 +51,21 @@ function createOpenAIClient(baseURL: string, apiKey: string): OpenAI {
   return new OpenAI({ apiKey, baseURL, defaultHeaders });
 }
 
-interface StrictSchemaResult {
-  schema: Record<string, any>;
-  nullablePaths: Set<string>;
-}
-
 /**
  * Recursively rewrites a JSON Schema so it satisfies OpenAI Structured Outputs
  * requirements: every object lists all of its properties in `required`,
  * disallows additional properties, and optional properties are expressed as
  * nullable so the model can emit `null` for them.
- * 
- * Tracks which property paths were made nullable (for optional properties)
- * so that stripNulls can selectively remove only those nulls.
- * Uses schema paths (e.g., "nickname", "address.street", "children.name") without array indices
- * that match the schema structure, not the data instance structure.
  */
-function enforceStrictJsonSchema(
-  node: any,
-  nullablePaths?: Set<string>,
-  schemaPath = ''
-): any {
+function enforceStrictJsonSchema(node: any): any {
   if (Array.isArray(node)) {
-    return node.map((item, index) =>
-      enforceStrictJsonSchema(item, nullablePaths, `${schemaPath}[${index}]`)
-    );
+    return node.map((item) => enforceStrictJsonSchema(item));
   }
   if (node === null || typeof node !== 'object') {
     return node;
   }
 
-  // Preserve $ref references as-is (fix for issue 3)
+  // Preserve $ref references as-is
   if ('$ref' in node) {
     return node;
   }
@@ -93,13 +77,7 @@ function enforceStrictJsonSchema(
       for (const [propName, propSchema] of Object.entries(
         value as Record<string, any>
       )) {
-        // Schema path for this property: parent schema path + property name
-        const propSchemaPath = schemaPath ? `${schemaPath}.${propName}` : propName;
-        props[propName] = enforceStrictJsonSchema(
-          propSchema,
-          nullablePaths,
-          propSchemaPath
-        );
+        props[propName] = enforceStrictJsonSchema(propSchema);
       }
       result.properties = props;
     } else if (key === 'definitions' || key === '$defs') {
@@ -107,9 +85,7 @@ function enforceStrictJsonSchema(
       for (const [defName, defSchema] of Object.entries(
         value as Record<string, any>
       )) {
-        // Definitions are processed with their own schema path scope
-        // but we don't track nullable paths here since they're not concrete data paths
-        defs[defName] = enforceStrictJsonSchema(defSchema, nullablePaths, `#/$defs/${defName}`);
+        defs[defName] = enforceStrictJsonSchema(defSchema);
       }
       result[key] = defs;
     } else if (
@@ -120,8 +96,7 @@ function enforceStrictJsonSchema(
       key === 'allOf' ||
       key === 'not'
     ) {
-      // For items, additionalProperties, and combinators, continue with same schema path
-      result[key] = enforceStrictJsonSchema(value, nullablePaths, schemaPath);
+      result[key] = enforceStrictJsonSchema(value);
     } else {
       result[key] = value;
     }
@@ -134,16 +109,11 @@ function enforceStrictJsonSchema(
     const allKeys = Object.keys(result.properties);
     const strictProps: Record<string, any> = {};
     for (const key of allKeys) {
-      const propSchema = result.properties[key]; // Already processed in first pass
+      const propSchema = result.properties[key];
       if (originalRequired.includes(key)) {
         strictProps[key] = propSchema;
       } else {
-        // Track this schema path as a nullable optional property
-        if (nullablePaths) {
-          const nullableSchemaPath = schemaPath ? `${schemaPath}.${key}` : key;
-          nullablePaths.add(nullableSchemaPath);
-        }
-        // Wrap optional property in anyOf with null, preserving any $ref inside propSchema
+        // Wrap optional property in anyOf with null
         strictProps[key] = { anyOf: [propSchema, { type: 'null' }] };
       }
     }
@@ -155,40 +125,91 @@ function enforceStrictJsonSchema(
   return result;
 }
 
-function toStrictJsonSchema(schema: z.ZodType<any>): StrictSchemaResult {
+function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any> } {
   const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' });
-  const nullablePaths = new Set<string>();
-  const strictSchema = enforceStrictJsonSchema(jsonSchema, nullablePaths);
-  return { schema: strictSchema, nullablePaths };
+  const strictSchema = enforceStrictJsonSchema(jsonSchema);
+  return { schema: strictSchema };
+}
+
+function resolveRef(ref: string, rootSchema: any): any {
+  if (!ref.startsWith('#/')) return null;
+  const parts = ref.substring(2).split('/');
+  let curr = rootSchema;
+  for (const p of parts) {
+    if (curr && typeof curr === 'object' && p in curr) {
+      curr = curr[p];
+    } else {
+      return null;
+    }
+  }
+  return curr;
 }
 
 /**
- * Recursively removes `null` values from parsed LLM output, but only for
- * properties that were made nullable during strict-schema conversion (i.e.,
- * originally optional properties). Preserves null values for properties that
- * are explicitly nullable in the original schema (e.g., z.string().nullable()).
- * 
- * Uses schema paths (without array indices) to match against nullablePaths.
+ * Recursively removes `null` values from parsed LLM output for properties
+ * that were made nullable during strict-schema conversion (optional properties).
+ * Uses the strict schema structure and resolves $ref recursively at every depth.
  */
-function stripNulls(value: any, nullablePaths: Set<string>, currentPath = '', schemaPath = ''): any {
-  if (Array.isArray(value)) {
-    return value.map((item, index) =>
-      stripNulls(item, nullablePaths, `${currentPath}[${index}]`, schemaPath)
-    );
+function stripNulls(value: any, schema: any, rootSchema: any): any {
+  if (value === null || value === undefined) {
+    return value;
   }
-  if (value !== null && typeof value === 'object') {
+  if (!schema) {
+    return value;
+  }
+  if ('$ref' in schema) {
+    const resolved = resolveRef(schema.$ref, rootSchema);
+    return resolved ? stripNulls(value, resolved, rootSchema) : value;
+  }
+
+  if (Array.isArray(value) && schema.type === 'array') {
+    const itemSchema = schema.items;
+    return value.map((item) => stripNulls(item, itemSchema, rootSchema));
+  }
+
+  if (typeof value === 'object' && schema.properties) {
     const result: Record<string, any> = {};
+    const properties = schema.properties;
     for (const [key, val] of Object.entries(value)) {
-      const childDataPath = currentPath ? `${currentPath}.${key}` : key;
-      const childSchemaPath = schemaPath ? `${schemaPath}.${key}` : key;
-      // Only strip null if this schema path was made nullable by our conversion
-      if (val === null && nullablePaths.has(childSchemaPath)) {
+      const propSchema = properties[key];
+      if (!propSchema) {
+        result[key] = val;
         continue;
       }
-      result[key] = stripNulls(val, nullablePaths, childDataPath, childSchemaPath);
+
+      let resolvedPropSchema = propSchema;
+      if ('$ref' in propSchema) {
+        resolvedPropSchema = resolveRef(propSchema.$ref, rootSchema) || propSchema;
+      }
+
+      let isOptionalWrapper = false;
+      let nonNullSubSchema = resolvedPropSchema;
+      if (resolvedPropSchema.anyOf && Array.isArray(resolvedPropSchema.anyOf)) {
+        const hasNullBranch = resolvedPropSchema.anyOf.some(
+          (b: any) => b.type === 'null'
+        );
+        if (hasNullBranch) {
+          isOptionalWrapper = true;
+          const nonNullBranches = resolvedPropSchema.anyOf.filter(
+            (b: any) => b.type !== 'null'
+          );
+          if (nonNullBranches.length === 1) {
+            nonNullSubSchema = nonNullBranches[0];
+          } else {
+            nonNullSubSchema = { anyOf: nonNullBranches };
+          }
+        }
+      }
+
+      if (val === null && isOptionalWrapper) {
+        continue;
+      }
+
+      result[key] = stripNulls(val, nonNullSubSchema, rootSchema);
     }
     return result;
   }
+
   return value;
 }
 
@@ -216,7 +237,7 @@ export async function generateStructuredOutput<T>({
 
   const client = clientOverride ?? createOpenAIClient(baseURL, apiKey);
 
-  const { schema: jsonSchema, nullablePaths } = toStrictJsonSchema(schema);
+  const { schema: jsonSchema } = toStrictJsonSchema(schema);
 
   const response = await client.chat.completions.create({
     model: finalModel,
@@ -240,7 +261,7 @@ export async function generateStructuredOutput<T>({
   }
 
   const parsed = JSON.parse(content);
-  const stripped = stripNulls(parsed, nullablePaths, '', '');
+  const stripped = stripNulls(parsed, jsonSchema, jsonSchema);
   return schema.parse(stripped);
 }
 
