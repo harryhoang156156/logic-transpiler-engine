@@ -305,6 +305,104 @@ describe('generateStructuredOutput', () => {
       })
     );
   });
+
+  it('strips null for optional properties inside arrays using schema paths', async () => {
+    // Regression test for array index mismatch: nullablePaths tracks schema paths
+    // (e.g., "items.name") not data paths (e.g., "items[0].name")
+    const schema = z.object({
+      name: z.string(),
+      items: z.array(z.object({
+        id: z.number(),
+        label: z.string().optional(), // optional property inside array items
+      })).optional(),
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ 
+        name: 'Test', 
+        items: [{ id: 1, label: null }, { id: 2, label: 'keep' }] 
+      }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    // label is optional -> null should be stripped from both array items
+    expect(result).toEqual({ 
+      name: 'Test', 
+      items: [{ id: 1 }, { id: 2, label: 'keep' }] 
+    });
+
+    const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
+    // items should be optional (wrapped in anyOf with null)
+    expect(jsonSchema.required).toContain('items');
+    expect(jsonSchema.properties.items).toEqual(
+      expect.objectContaining({
+        anyOf: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'array',
+            items: expect.objectContaining({
+              type: 'object',
+              properties: expect.objectContaining({
+                id: { type: 'integer' },
+                label: expect.objectContaining({
+                  anyOf: expect.arrayContaining([
+                    { type: 'string' },
+                    { type: 'null' },
+                  ]),
+                }),
+              }),
+              required: ['id', 'label'],
+              additionalProperties: false,
+            }),
+          }),
+          { type: 'null' },
+        ]),
+      })
+    );
+  });
+
+  it('preserves $ref when wrapping optional recursive property in anyOf', async () => {
+    // Regression test: optional property with $ref (recursive type) should
+    // preserve the $ref inside the anyOf wrapper
+    const schema = z.object({
+      name: z.string(),
+      children: z.array(z.lazy(() => schema)).optional(),
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ name: 'Test', children: null }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    // children is optional and null -> should be stripped
+    expect(result).toEqual({ name: 'Test' });
+
+    const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
+    // children should be in required (strict mode) and wrapped in anyOf with null
+    expect(jsonSchema.required).toContain('children');
+    // The anyOf should contain the $ref and null
+    expect(jsonSchema.properties.children).toEqual(
+      expect.objectContaining({
+        anyOf: expect.arrayContaining([
+          expect.objectContaining({ $ref: expect.any(String) }),
+          { type: 'null' },
+        ]),
+      })
+    );
+  });
 });
 
 describe('requestAstGeneration', () => {

@@ -64,16 +64,17 @@ interface StrictSchemaResult {
  * 
  * Tracks which property paths were made nullable (for optional properties)
  * so that stripNulls can selectively remove only those nulls.
- * Uses data paths (e.g., "nickname", "address.street") that match the parsed JSON structure.
+ * Uses schema paths (e.g., "nickname", "address.street", "children.name") without array indices
+ * that match the schema structure, not the data instance structure.
  */
 function enforceStrictJsonSchema(
   node: any,
   nullablePaths?: Set<string>,
-  dataPath = ''
+  schemaPath = ''
 ): any {
   if (Array.isArray(node)) {
     return node.map((item, index) =>
-      enforceStrictJsonSchema(item, nullablePaths, `${dataPath}[${index}]`)
+      enforceStrictJsonSchema(item, nullablePaths, `${schemaPath}[${index}]`)
     );
   }
   if (node === null || typeof node !== 'object') {
@@ -92,12 +93,12 @@ function enforceStrictJsonSchema(
       for (const [propName, propSchema] of Object.entries(
         value as Record<string, any>
       )) {
-        // Data path for this property: parent data path + property name
-        const propDataPath = dataPath ? `${dataPath}.${propName}` : propName;
+        // Schema path for this property: parent schema path + property name
+        const propSchemaPath = schemaPath ? `${schemaPath}.${propName}` : propName;
         props[propName] = enforceStrictJsonSchema(
           propSchema,
           nullablePaths,
-          propDataPath
+          propSchemaPath
         );
       }
       result.properties = props;
@@ -106,8 +107,9 @@ function enforceStrictJsonSchema(
       for (const [defName, defSchema] of Object.entries(
         value as Record<string, any>
       )) {
-        // Definitions don't have data paths, but their contents might be referenced
-        defs[defName] = enforceStrictJsonSchema(defSchema, nullablePaths, '');
+        // Definitions are processed with their own schema path scope
+        // but we don't track nullable paths here since they're not concrete data paths
+        defs[defName] = enforceStrictJsonSchema(defSchema, nullablePaths, `#/$defs/${defName}`);
       }
       result[key] = defs;
     } else if (
@@ -118,7 +120,8 @@ function enforceStrictJsonSchema(
       key === 'allOf' ||
       key === 'not'
     ) {
-      result[key] = enforceStrictJsonSchema(value, nullablePaths, dataPath);
+      // For items, additionalProperties, and combinators, continue with same schema path
+      result[key] = enforceStrictJsonSchema(value, nullablePaths, schemaPath);
     } else {
       result[key] = value;
     }
@@ -135,11 +138,12 @@ function enforceStrictJsonSchema(
       if (originalRequired.includes(key)) {
         strictProps[key] = propSchema;
       } else {
-        // Track this data path as a nullable optional property
+        // Track this schema path as a nullable optional property
         if (nullablePaths) {
-          const nullableDataPath = dataPath ? `${dataPath}.${key}` : key;
-          nullablePaths.add(nullableDataPath);
+          const nullableSchemaPath = schemaPath ? `${schemaPath}.${key}` : key;
+          nullablePaths.add(nullableSchemaPath);
         }
+        // Wrap optional property in anyOf with null, preserving any $ref inside propSchema
         strictProps[key] = { anyOf: [propSchema, { type: 'null' }] };
       }
     }
@@ -163,22 +167,25 @@ function toStrictJsonSchema(schema: z.ZodType<any>): StrictSchemaResult {
  * properties that were made nullable during strict-schema conversion (i.e.,
  * originally optional properties). Preserves null values for properties that
  * are explicitly nullable in the original schema (e.g., z.string().nullable()).
+ * 
+ * Uses schema paths (without array indices) to match against nullablePaths.
  */
-function stripNulls(value: any, nullablePaths: Set<string>, currentPath = ''): any {
+function stripNulls(value: any, nullablePaths: Set<string>, currentPath = '', schemaPath = ''): any {
   if (Array.isArray(value)) {
     return value.map((item, index) =>
-      stripNulls(item, nullablePaths, `${currentPath}[${index}]`)
+      stripNulls(item, nullablePaths, `${currentPath}[${index}]`, schemaPath)
     );
   }
   if (value !== null && typeof value === 'object') {
     const result: Record<string, any> = {};
     for (const [key, val] of Object.entries(value)) {
-      const childPath = currentPath ? `${currentPath}.${key}` : key;
-      // Only strip null if this path was made nullable by our conversion
-      if (val === null && nullablePaths.has(childPath)) {
+      const childDataPath = currentPath ? `${currentPath}.${key}` : key;
+      const childSchemaPath = schemaPath ? `${schemaPath}.${key}` : key;
+      // Only strip null if this schema path was made nullable by our conversion
+      if (val === null && nullablePaths.has(childSchemaPath)) {
         continue;
       }
-      result[key] = stripNulls(val, nullablePaths, childPath);
+      result[key] = stripNulls(val, nullablePaths, childDataPath, childSchemaPath);
     }
     return result;
   }
@@ -233,7 +240,7 @@ export async function generateStructuredOutput<T>({
   }
 
   const parsed = JSON.parse(content);
-  const stripped = stripNulls(parsed, nullablePaths);
+  const stripped = stripNulls(parsed, nullablePaths, '', '');
   return schema.parse(stripped);
 }
 
