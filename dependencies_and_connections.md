@@ -60,10 +60,11 @@ LAYER 0 (Contracts):   ───────────────────
 * **External Imports:** `openai`, `zod`, `zod-to-json-schema`, `dotenv`
 * **Consumed By:** `src/ingestion/gap_analyzer.ts`, `src/main.ts`
 * **Exported Contracts:**
-  * `generateStructuredOutput<T>(options: { systemInstruction: string; userPrompt: string; schema: z.ZodType<T>; clientOverride?: any }): Promise<T>`
+  * `resolveBifrostConfig(env?: Record<string, string | undefined>): { baseURL: string; apiKey: string; model: string }`
+  * `generateStructuredOutput<T>(options: { systemInstruction: string; userPrompt: string; schema: z.ZodType<T>; modelOverride?: string; clientOverride?: any }): Promise<T>`
   * `requestAstGeneration(brief: string, contextJson?: string, clientOverride?: any): Promise<ASTNode>`
   * `requestAstCorrection(brokenAst: ASTNode, errors: string[], clientOverride?: any): Promise<ASTNode>`
-* **Data Flow:** Receives raw text prompts + Zod schemas from callers → enforces Kilo Gateway (`https://kilo.ai`, model `kilo-auto/free`) JSON Schema structured output → parses and validates via `schema.parse()` → returns strictly typed objects.
+* **Data Flow:** Receives raw text prompts + Zod schemas from callers → resolves `BIFROST_BASE_URL`, `BIFROST_API_KEY`, and `LLM_MODEL` dynamically from `process.env` (never hardcoding a model ID) → enforces JSON Schema structured output via Bifrost's OpenAI-compatible gateway → parses and validates via `schema.parse()` → returns strictly typed objects.
 
 ### Layer 2: `src/ingestion/parser.ts`
 * **Internal Imports:**
