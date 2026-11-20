@@ -137,8 +137,9 @@ function enforceStrictJsonSchema(
         strictProps[key] = propSchema;
       } else {
         // Track this path as a nullable optional property
+        // The path in the parsed JSON will be just the property name at this level
         if (nullablePaths) {
-          nullablePaths.add(`${currentPath}.properties.${key}`);
+          nullablePaths.add(`${currentPath}.${key}`);
         }
         strictProps[key] = { anyOf: [propSchema, { type: 'null' }] };
       }
@@ -156,6 +157,20 @@ function toStrictJsonSchema(schema: z.ZodType<any>): StrictSchemaResult {
   const nullablePaths = new Set<string>();
   const strictSchema = enforceStrictJsonSchema(jsonSchema, nullablePaths);
   return { schema: strictSchema, nullablePaths };
+}
+
+/**
+ * Checks if a schema represents a nullable type (either anyOf with null or type array with null)
+ */
+function isNullableSchema(schema: any): boolean {
+  if (!schema || typeof schema !== 'object') return false;
+  if (schema.anyOf) {
+    return schema.anyOf.some((s: any) => s.type === 'null');
+  }
+  if (Array.isArray(schema.type)) {
+    return schema.type.includes('null');
+  }
+  return false;
 }
 
 /**

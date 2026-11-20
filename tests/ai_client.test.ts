@@ -127,6 +127,7 @@ describe('generateStructuredOutput', () => {
     const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
     expect(jsonSchema.required).toEqual(['name', 'nickname']);
     expect(jsonSchema.additionalProperties).toBe(false);
+    // Optional fields are wrapped in anyOf with null
     expect(jsonSchema.properties.nickname).toEqual({
       anyOf: [{ type: 'string' }, { type: 'null' }],
     });
@@ -134,6 +135,7 @@ describe('generateStructuredOutput', () => {
 
   it('preserves null for explicitly nullable required properties', async () => {
     // z.string().nullable() creates a required property that can be null
+    // zod-to-json-schema represents this as type: ['string', 'null']
     const schema = z.object({
       name: z.string(),
       middleName: z.string().nullable(), // required but nullable
@@ -157,9 +159,9 @@ describe('generateStructuredOutput', () => {
     const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
     // middleName should be in required (since it's not optional)
     expect(jsonSchema.required).toEqual(['name', 'middleName']);
-    // middleName should have anyOf with null from the original schema, not wrapped again
+    // zod-to-json-schema represents nullable as type array
     expect(jsonSchema.properties.middleName).toEqual({
-      anyOf: [{ type: 'string' }, { type: 'null' }],
+      type: ['string', 'null'],
     });
   });
 
@@ -220,8 +222,7 @@ describe('generateStructuredOutput', () => {
 
   it('preserves $ref references in generated schema', async () => {
     // Test that $ref references are not expanded during strict schema conversion
-    // Note: zodToJsonSchema with $refStrategy: 'root' only creates $ref for recursive types,
-    // not for reused schemas. This test verifies that if $ref exists, it's preserved.
+    // Note: zodToJsonSchema with $refStrategy: 'root' creates $ref for recursive types
     const schema = z.object({
       name: z.string(),
       // Self-referential type to force $ref generation
