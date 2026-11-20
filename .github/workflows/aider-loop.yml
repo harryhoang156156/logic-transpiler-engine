@@ -49,9 +49,12 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Run Aider Self-Healing Loop (OpenRouter -> Kilo Auto)
+      - name: Run Aider Self-Healing Loop (Google -> 3x OpenRouter -> Kilo)
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OR_KEY_1: ${{ secrets.OPENROUTER_API_KEY }}
+          OR_KEY_2: ${{ secrets.OPENROUTER_API_KEY_2 }}
+          OR_KEY_3: ${{ secrets.OPENROUTER_API_KEY_3 }}
           KILO_KEY: ${{ secrets.KILO_API_KEY }}
           HF_HUB_DISABLE_TELEMETRY: '1'
           LITELLM_NUM_RETRIES: '1'
@@ -75,10 +78,20 @@ jobs:
           fi
 
           CANDIDATES=(
-            "openrouter|openrouter/particle-ai/particle-1:free"
-            "openrouter|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter|openrouter/baidu/ernie-5.5-flash-preview:free"
+            "google|gemini/gemini-2.5-flash"
+            "google|gemini/gemini-2.5-flash-lite"
+            "openrouter1|openrouter/particle-ai/particle-1:free"
+            "openrouter1|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+            "openrouter1|openrouter/nvidia/nemotron-3.5-super-vl:free"
+            "openrouter1|openrouter/baidu/ernie-5.5-flash-preview:free"
+            "openrouter2|openrouter/particle-ai/particle-1:free"
+            "openrouter2|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+            "openrouter2|openrouter/nvidia/nemotron-3.5-super-vl:free"
+            "openrouter2|openrouter/baidu/ernie-5.5-flash-preview:free"
+            "openrouter3|openrouter/particle-ai/particle-1:free"
+            "openrouter3|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+            "openrouter3|openrouter/nvidia/nemotron-3.5-super-vl:free"
+            "openrouter3|openrouter/baidu/ernie-5.5-flash-preview:free"
             "kilo|openai/kilo-auto/free"
           )
 
@@ -87,24 +100,34 @@ jobs:
             PROVIDER="${ENTRY%%|*}"
             MODEL="${ENTRY#*|}"
 
-            if [ "$PROVIDER" == "openrouter" ] && [ -z "$OPENROUTER_API_KEY" ]; then
-              echo "Skipping [$PROVIDER] $MODEL (OPENROUTER_API_KEY not set)"
-              continue
-            fi
-            if [ "$PROVIDER" == "kilo" ] && [ -z "$KILO_KEY" ]; then
-              echo "Skipping [$PROVIDER] $MODEL (KILO_API_KEY not set)"
-              continue
-            fi
+            unset GEMINI_API_KEY OPENROUTER_API_KEY OPENAI_API_BASE OPENAI_API_KEY
+
+            case "$PROVIDER" in
+              google)
+                [ -z "$GOOGLE_KEY" ] && continue
+                export GEMINI_API_KEY="$GOOGLE_KEY"
+                ;;
+              openrouter1)
+                [ -z "$OR_KEY_1" ] && continue
+                export OPENROUTER_API_KEY="$OR_KEY_1"
+                ;;
+              openrouter2)
+                [ -z "$OR_KEY_2" ] && continue
+                export OPENROUTER_API_KEY="$OR_KEY_2"
+                ;;
+              openrouter3)
+                [ -z "$OR_KEY_3" ] && continue
+                export OPENROUTER_API_KEY="$OR_KEY_3"
+                ;;
+              kilo)
+                [ -z "$KILO_KEY" ] && continue
+                export OPENAI_API_BASE="https://kilo.ai"
+                export OPENAI_API_KEY="$KILO_KEY"
+                ;;
+            esac
 
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-
-            unset OPENAI_API_BASE
-            unset OPENAI_API_KEY
-            if [ "$PROVIDER" == "kilo" ]; then
-              export OPENAI_API_BASE="https://kilo.ai"
-              export OPENAI_API_KEY="$KILO_KEY"
-            fi
 
             echo "=================================================="
             echo "Attempting Aider [$PROVIDER] -> $MODEL"
@@ -123,7 +146,7 @@ jobs:
               --test-cmd "npm run build && npm run test" \
               --auto-test \
               --message "$PROMPT" \
-              2>&1 | tee /tmp/aider.log || true
+              2>&1 | tee /tmp/aider.log | grep -viE "<(!DOCTYPE|html|head|body|script|style|svg|path|div|span|meta|link)" || true
 
             git add -A
             if ! git diff --cached --quiet; then
@@ -131,7 +154,7 @@ jobs:
             fi
             NEW_SHA=$(git rev-parse HEAD)
 
-            if ! grep -qiE "rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|valid model ID|BadRequestError|400 Bad Request|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout" /tmp/aider.log \
+            if ! grep -qiE "<!DOCTYPE|<html|rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|valid model ID|BadRequestError|400 Bad Request|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout|quota|RESOURCE_EXHAUSTED" /tmp/aider.log \
                && [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
                && npm run build >/dev/null 2>&1 \
                && npm run test >/dev/null 2>&1; then
@@ -148,13 +171,13 @@ jobs:
               git reset --hard "$CHECKPOINT_SHA" >/dev/null
               git clean -f >/dev/null
             fi
-            sleep 5
+            sleep 3
           done
 
           if [ "$SUCCESS" != "true" ]; then
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-            echo "::error::All models hit rate limits or failed. Wait a few minutes and re-run."
+            echo "::error::All provider keys hit rate limits or failed. Wait a few minutes and re-run."
             exit 1
           fi
 
