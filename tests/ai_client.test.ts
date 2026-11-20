@@ -104,6 +104,72 @@ describe('generateStructuredOutput', () => {
     });
   });
 
+  it('does not treat property names like allOf, oneOf, or not as unsupported keywords', async () => {
+    const schemaWithKeywordProperties = z.object({
+      allOf: z.string(),
+      oneOf: z.number(),
+      not: z.boolean(),
+    });
+
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ allOf: 'foo', oneOf: 123, not: true }),
+          },
+        },
+      ],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema: schemaWithKeywordProperties,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    expect(result).toEqual({ allOf: 'foo', oneOf: 123, not: true });
+    const callArgs = createMock.mock.calls[0][0];
+    // Strict should remain true
+    expect(callArgs.response_format.json_schema.strict).toBe(true);
+    expect(callArgs.response_format.json_schema.schema.additionalProperties).toBe(false);
+  });
+
+  it('falls back to non-strict schema and validates directly with Zod when unsupported keywords exist', async () => {
+    // z.intersection generates allOf in json schema
+    const schemaWithIntersection = z.intersection(
+      z.object({ a: z.string() }),
+      z.object({ b: z.number() })
+    );
+
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [
+        {
+          message: {
+            content: JSON.stringify({ a: 'hello', b: 42 }),
+          },
+        },
+      ],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema: schemaWithIntersection,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    expect(result).toEqual({ a: 'hello', b: 42 });
+    const callArgs = createMock.mock.calls[0][0];
+    expect(callArgs.response_format.json_schema.strict).toBe(false);
+    // Should return original converted schema without strict rewriting (e.g. no forced additionalProperties: false at top level)
+    expect(callArgs.response_format.json_schema.schema.allOf).toBeDefined();
+  });
+
   it('emits a strict JSON schema with all properties required and optional fields nullable', async () => {
     const schema = z.object({
       name: z.string(),

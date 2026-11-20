@@ -132,22 +132,50 @@ function hasUnsupportedKeywords(node: any): boolean {
   if (node === null || typeof node !== 'object') {
     return false;
   }
+
+  if ('allOf' in node || 'oneOf' in node || 'not' in node) {
+    return true;
+  }
+
   for (const [key, value] of Object.entries(node)) {
-    if (key === 'allOf' || key === 'oneOf' || key === 'not') {
-      return true;
-    }
-    if (hasUnsupportedKeywords(value)) {
-      return true;
+    if (key === 'properties' && value && typeof value === 'object') {
+      for (const propSchema of Object.values(value as Record<string, any>)) {
+        if (hasUnsupportedKeywords(propSchema)) {
+          return true;
+        }
+      }
+    } else if (
+      (key === 'definitions' || key === '$defs') &&
+      value &&
+      typeof value === 'object'
+    ) {
+      for (const defSchema of Object.values(value as Record<string, any>)) {
+        if (hasUnsupportedKeywords(defSchema)) {
+          return true;
+        }
+      }
+    } else if (
+      key === 'items' ||
+      key === 'additionalProperties' ||
+      key === 'anyOf'
+    ) {
+      if (hasUnsupportedKeywords(value)) {
+        return true;
+      }
     }
   }
+
   return false;
 }
 
 function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any>; strict: boolean } {
-  const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' });
+  const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' }) as Record<string, any>;
   const unsupported = hasUnsupportedKeywords(jsonSchema);
+  if (unsupported) {
+    return { schema: jsonSchema, strict: false };
+  }
   const strictSchema = enforceStrictJsonSchema(jsonSchema);
-  return { schema: strictSchema, strict: !unsupported };
+  return { schema: strictSchema, strict: true };
 }
 
 function resolveRef(ref: string, rootSchema: any): any {
@@ -280,6 +308,10 @@ export async function generateStructuredOutput<T>({
   }
 
   const parsed = JSON.parse(content);
+  if (!strict) {
+    return schema.parse(parsed);
+  }
+
   const stripped = stripNulls(parsed, jsonSchema, jsonSchema);
   return schema.parse(stripped);
 }
