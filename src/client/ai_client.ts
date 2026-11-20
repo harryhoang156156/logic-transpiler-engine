@@ -66,7 +66,7 @@ export async function generateStructuredOutput<T>({
   const { baseURL, apiKey, model } = resolveBifrostConfig();
   const finalModel = modelOverride ?? model;
 
-  if (!finalModel) {
+  if (!finalModel && !clientOverride) {
     throw new Error(
       'LLM_MODEL or BIFROST_MODEL must be set in environment variables.'
     );
