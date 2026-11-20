@@ -125,10 +125,29 @@ function enforceStrictJsonSchema(node: any): any {
   return result;
 }
 
-function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any> } {
+function hasUnsupportedKeywords(node: any): boolean {
+  if (Array.isArray(node)) {
+    return node.some((item) => hasUnsupportedKeywords(item));
+  }
+  if (node === null || typeof node !== 'object') {
+    return false;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (key === 'allOf' || key === 'oneOf' || key === 'not') {
+      return true;
+    }
+    if (hasUnsupportedKeywords(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any>; strict: boolean } {
   const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' });
+  const unsupported = hasUnsupportedKeywords(jsonSchema);
   const strictSchema = enforceStrictJsonSchema(jsonSchema);
-  return { schema: strictSchema };
+  return { schema: strictSchema, strict: !unsupported };
 }
 
 function resolveRef(ref: string, rootSchema: any): any {
@@ -237,7 +256,7 @@ export async function generateStructuredOutput<T>({
 
   const client = clientOverride ?? createOpenAIClient(baseURL, apiKey);
 
-  const { schema: jsonSchema } = toStrictJsonSchema(schema);
+  const { schema: jsonSchema, strict } = toStrictJsonSchema(schema);
 
   const response = await client.chat.completions.create({
     model: finalModel,
@@ -250,7 +269,7 @@ export async function generateStructuredOutput<T>({
       json_schema: {
         name: 'ast_output',
         schema: jsonSchema,
-        strict: true,
+        strict,
       },
     },
   });
