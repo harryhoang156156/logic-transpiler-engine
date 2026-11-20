@@ -133,6 +133,15 @@ function hasUnsupportedKeywords(node: any): boolean {
     return false;
   }
 
+  // $ref nodes are opaque references; never treat their keys as schema keywords.
+  if ('$ref' in node) {
+    return false;
+  }
+
+  // `allOf`, `oneOf`, and `not` are unsupported in OpenAI strict mode when they
+  // appear as schema keywords. Property names inside a `properties` map are
+  // field names, not schema keywords, so they are inspected only via their
+  // schema values below.
   if ('allOf' in node || 'oneOf' in node || 'not' in node) {
     return true;
   }
@@ -172,6 +181,8 @@ function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, an
   const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' }) as Record<string, any>;
   const unsupported = hasUnsupportedKeywords(jsonSchema);
   if (unsupported) {
+    // Return the original converted schema; strict rewriting and null
+    // normalization are exclusive to the strict path.
     return { schema: jsonSchema, strict: false };
   }
   const strictSchema = enforceStrictJsonSchema(jsonSchema);
@@ -309,6 +320,8 @@ export async function generateStructuredOutput<T>({
 
   const parsed = JSON.parse(content);
   if (!strict) {
+    // Fallback path: validate directly with Zod; no strict rewriting or
+    // null normalization is applied.
     return schema.parse(parsed);
   }
 
