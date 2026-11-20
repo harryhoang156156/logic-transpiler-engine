@@ -6,7 +6,6 @@ import {
   requestAstGeneration,
   requestAstCorrection,
 } from '../src/client/ai_client.js';
-import { ASTNodeSchema } from '../src/schemas.js';
 
 describe('resolveBifrostConfig', () => {
   const originalEnv = process.env;
@@ -40,6 +39,13 @@ describe('resolveBifrostConfig', () => {
   it('keeps /v1 if already present', () => {
     const config = resolveBifrostConfig({ BIFROST_BASE_URL: 'http://custom:9000/v1' });
     expect(config.baseURL).toBe('http://custom:9000/v1');
+  });
+
+  it('normalizes trailing slashes before checking for /v1', () => {
+    const config = resolveBifrostConfig({
+      BIFROST_BASE_URL: 'http://custom:9000/openai/v1/',
+    });
+    expect(config.baseURL).toBe('http://custom:9000/openai/v1');
   });
 
   it('reads BIFROST_API_KEY and LLM_MODEL', () => {
@@ -98,6 +104,34 @@ describe('generateStructuredOutput', () => {
     });
   });
 
+  it('emits a strict JSON schema with all properties required and optional fields nullable', async () => {
+    const schema = z.object({
+      name: z.string(),
+      nickname: z.string().optional(),
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ name: 'x', nickname: null }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    expect(result).toEqual({ name: 'x' });
+
+    const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
+    expect(jsonSchema.required).toEqual(['name', 'nickname']);
+    expect(jsonSchema.additionalProperties).toBe(false);
+    expect(jsonSchema.properties.nickname).toEqual({
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    });
+  });
+
   it('throws if the LLM returns invalid JSON', async () => {
     const createMock = vi.fn().mockResolvedValue({
       choices: [{ message: { content: 'not json' } }],
@@ -132,7 +166,7 @@ describe('generateStructuredOutput', () => {
 });
 
 describe('requestAstGeneration', () => {
-  it('calls the LLM client with generator prompts and validates against ASTNodeSchema', async () => {
+  it('wraps the AST in an envelope, validates it, and unwraps the result', async () => {
     const astNode = {
       type: 'ModuleContainer',
       id: 'node_1',
@@ -141,7 +175,7 @@ describe('requestAstGeneration', () => {
       children: [],
     };
     const createMock = vi.fn().mockResolvedValue({
-      choices: [{ message: { content: JSON.stringify(astNode) } }],
+      choices: [{ message: { content: JSON.stringify({ ast: astNode }) } }],
     });
     const clientOverride = { chat: { completions: { create: createMock } } };
 
@@ -152,7 +186,7 @@ describe('requestAstGeneration', () => {
 });
 
 describe('requestAstCorrection', () => {
-  it('calls the LLM client with debugger prompts and validates against ASTNodeSchema', async () => {
+  it('wraps the AST in an envelope, validates it, and unwraps the result', async () => {
     const astNode = {
       type: 'ModuleContainer',
       id: 'node_1',
@@ -161,11 +195,17 @@ describe('requestAstCorrection', () => {
       children: [],
     };
     const createMock = vi.fn().mockResolvedValue({
-      choices: [{ message: { content: JSON.stringify(astNode) } }],
+      choices: [{ message: { content: JSON.stringify({ ast: astNode }) } }],
     });
     const clientOverride = { chat: { completions: { create: createMock } } };
 
-    const brokenAst = { type: 'ModuleContainer', id: 'node_1', moduleName: 'mod', exports: [], children: [] };
+    const brokenAst = {
+      type: 'ModuleContainer',
+      id: 'node_1',
+      moduleName: 'mod',
+      exports: [],
+      children: [],
+    };
     const result = await requestAstCorrection(brokenAst, ['error 1'], clientOverride);
     expect(result).toEqual(astNode);
     expect(createMock).toHaveBeenCalledTimes(1);
