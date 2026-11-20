@@ -132,6 +132,60 @@ describe('generateStructuredOutput', () => {
     });
   });
 
+  it('preserves null for explicitly nullable required properties', async () => {
+    // z.string().nullable() creates a required property that can be null
+    const schema = z.object({
+      name: z.string(),
+      middleName: z.string().nullable(), // required but nullable
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ name: 'John', middleName: null }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    // middleName should be preserved as null since it's explicitly nullable in the schema
+    expect(result).toEqual({ name: 'John', middleName: null });
+
+    const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
+    // middleName should be in required (since it's not optional)
+    expect(jsonSchema.required).toEqual(['name', 'middleName']);
+    // middleName should have anyOf with null from the original schema, not wrapped again
+    expect(jsonSchema.properties.middleName).toEqual({
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    });
+  });
+
+  it('strips null only for optional properties, not for nullable required properties', async () => {
+    const schema = z.object({
+      name: z.string(),
+      nickname: z.string().optional(), // optional -> should strip null
+      middleName: z.string().nullable(), // required nullable -> should preserve null
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ name: 'John', nickname: null, middleName: null }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    // nickname (optional) should be stripped, middleName (nullable required) should be preserved
+    expect(result).toEqual({ name: 'John', middleName: null });
+  });
+
   it('throws if the LLM returns invalid JSON', async () => {
     const createMock = vi.fn().mockResolvedValue({
       choices: [{ message: { content: 'not json' } }],
@@ -162,6 +216,87 @@ describe('generateStructuredOutput', () => {
         clientOverride,
       })
     ).rejects.toThrow();
+  });
+
+  it('preserves $ref references in generated schema', async () => {
+    // Test that $ref references are not expanded during strict schema conversion
+    const addressSchema = z.object({
+      street: z.string(),
+      city: z.string(),
+    });
+    const schema = z.object({
+      name: z.string(),
+      billingAddress: addressSchema,
+      shippingAddress: addressSchema, // Reuses the same subschema -> should generate $ref
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ 
+        name: 'Test', 
+        billingAddress: { street: '123 Main St', city: 'NYC' },
+        shippingAddress: { street: '456 Oak Ave', city: 'LA' }
+      }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    expect(result.name).toBe('Test');
+    expect(result.billingAddress).toEqual({ street: '123 Main St', city: 'NYC' });
+    expect(result.shippingAddress).toEqual({ street: '456 Oak Ave', city: 'LA' });
+
+    const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
+    // The schema should have definitions/$defs with the address schema
+    // and properties should reference it via $ref
+    const defs = jsonSchema.$defs || jsonSchema.definitions;
+    expect(defs).toBeDefined();
+    // At least one of the address properties should use $ref
+    const hasRef = jsonSchema.properties.billingAddress.$ref || jsonSchema.properties.shippingAddress.$ref;
+    expect(hasRef).toBeDefined();
+  });
+
+  it('handles optional object with reused subschema', async () => {
+    // Regression test: optional property that references a shared subschema
+    const addressSchema = z.object({
+      street: z.string(),
+      city: z.string(),
+    });
+    const schema = z.object({
+      name: z.string(),
+      address: addressSchema.optional(), // Optional object with shared subschema
+    });
+    const createMock = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ name: 'Test', address: null }) } }],
+    });
+    const clientOverride = { chat: { completions: { create: createMock } } };
+
+    const result = await generateStructuredOutput({
+      systemInstruction: 'sys',
+      userPrompt: 'user',
+      schema,
+      modelOverride: 'm',
+      clientOverride,
+    });
+
+    // address is optional and null -> should be stripped
+    expect(result).toEqual({ name: 'Test' });
+
+    const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
+    // address should be in required (strict mode) and nullable
+    expect(jsonSchema.required).toContain('address');
+    expect(jsonSchema.properties.address).toEqual(
+      expect.objectContaining({
+        anyOf: expect.arrayContaining([
+          expect.objectContaining({ $ref: expect.any(String) }),
+          { type: 'null' },
+        ]),
+      })
+    );
   });
 });
 
