@@ -25,7 +25,7 @@ Perform the final end-to-end integration and activation pass across the entire `
 4. **Contract Alignment:** Verify every exported function name, parameter order, and return type in `src/` matches `dependencies_and_connections.md` so `src/main.ts` connects seamlessly to `parser.ts`, `gap_analyzer.ts`, `ai_client.ts`, `atomic_merger.ts`, `ts_emitter.ts`, and `compiler_guard.ts`.
 5. **Environment & Secret Hygiene:**
    * Confirm `dotenv.config()` is invoked cleanly at the entry point of `src/main.ts` without polluting stdout (which could corrupt structured logs in CI).
-   * Confirm `src/client/ai_client.ts` resolves `KILO_API_KEY`, `KILO_BASE_URL` (`https://kilo.ai`), and `LLM_MODEL` (`kilo-auto/free`) cleanly.
+      * Confirm `src/client/ai_client.ts` resolves `BIFROST_BASE_URL` (defaulting to `'http://localhost:8080/openai/v1'`), `BIFROST_API_KEY` (attaching `'x-bf-vk'` header when prefixed with `'sk-bf-'`), and `LLM_MODEL` cleanly from environment variables without any hardcoded model strings.
    * Ensure no error messages or logs ever print raw API key values.
 6. **CLI Entry Point Verification (`src/main.ts` & `dist/main.js`):**
    * Ensure `src/main.ts` properly detects direct CLI execution (using `pathToFileURL(process.argv[1]).href === import.meta.url`), supports `--help` (printing usage flags and exiting with `0`), parses `--spec`, `--overview`, `--brief`, `--src`, `--out`, and `--retries`, and exits cleanly with `0` on success or `1` on failure.
