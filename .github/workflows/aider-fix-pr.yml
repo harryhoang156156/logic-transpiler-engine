@@ -161,7 +161,6 @@ jobs:
             aider \
               --model "$MODEL" \
               --edit-format whole \
-              --max-chat-history-messages 6 \
               --map-tokens 1024 \
               --no-detect-urls \
               --no-show-model-warnings \
