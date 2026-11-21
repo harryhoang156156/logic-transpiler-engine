@@ -123,6 +123,17 @@ describe('ts_emitter', () => {
     expect(emitted).toContain('// actual comment');
   });
 
+  it('handles nonterminal line comment with quotes followed by code and URLs', () => {
+    const node: ASTNode = {
+      id: '1',
+      type: 'ExpressionBlock',
+      codeSnippet: '// check "quoted text" in comment\nconst endpoint = "https://api.example.com"; // terminal'
+    };
+    const emitted = emitTypeScript(node, 0, false);
+    expect(emitted).toContain('// check "quoted text" in comment\nconst endpoint = "https://api.example.com";');
+    expect(emitted).toContain('// terminal');
+  });
+
   it('emits Solana nodes with hyphenated IDs', () => {
     const listen: ASTNode = {
       id: 'listen-1',
