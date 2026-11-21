@@ -112,6 +112,40 @@ describe('ts_emitter', () => {
     expect(emitTypeScript(node, 0, false)).toBe('const x = 1;\n');
   });
 
+  it('handles URL literals with // without treating them as comments', () => {
+    const node: ASTNode = {
+      id: '1',
+      type: 'ExpressionBlock',
+      codeSnippet: 'const url = "https://example.com/api";'
+    };
+    const emitted = emitTypeScript(node, 0, false);
+    expect(emitted).toContain('const url = "https://example.com/api";');
+    expect(emitted).not.toContain('//');
+  });
+
+  it('emits Solana nodes with hyphenated IDs', () => {
+    const listen: ASTNode = {
+      id: 'listen-1',
+      type: 'Solana_ListenPumpFun',
+      connectionVarName: 'conn',
+      programAddress: '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P',
+      accountInfoParamName: 'acc',
+      callbackBody: [{ id: '2', type: 'ExpressionBlock', codeSnippet: 'console.log(acc)' }]
+    };
+    expect(emitTypeScript(listen, 0, false)).toContain('subscription_listen_1');
+
+    const sim: ASTNode = {
+      id: 'sim-1',
+      type: 'Solana_SimulatePayload',
+      connectionVarName: 'conn',
+      transactionVarName: 'tx',
+      throwOnError: true
+    };
+    const simEmitted = emitTypeScript(sim, 0, false);
+    expect(simEmitted).toContain('simulation_sim_1');
+    expect(simEmitted).toContain('simulation_sim_1.value.err');
+  });
+
   it('emits Solana nodes', () => {
     const conn: ASTNode = { id: '1', type: 'Solana_EstablishConnection', connectionVarName: 'conn', rpcEnvVar: 'RPC', commitment: 'confirmed' };
     expect(emitTypeScript(conn, 0, false)).toContain("const conn = new Connection(process.env.RPC || '', 'confirmed');");

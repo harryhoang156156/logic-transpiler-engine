@@ -8,6 +8,47 @@ import Database from 'better-sqlite3';
 import { Redis } from 'ioredis';
 dotenv.config();`;
 
+function sanitizeId(id: string): string {
+  return id.replace(/[^a-zA-Z0-9_$]/g, '_');
+}
+
+function parseTrailingComment(snippet: string): { code: string; comment?: string } {
+  let inString: string | null = null;
+  let escaped = false;
+  let commentIdx = -1;
+
+  for (let i = 0; i < snippet.length; i++) {
+    const char = snippet[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (inString) {
+      if (char === inString) {
+        inString = null;
+      }
+    } else {
+      if (char === '"' || char === "'" || char === '`') {
+        inString = char;
+      } else if (char === '/' && i + 1 < snippet.length && snippet[i + 1] === '/') {
+        commentIdx = i;
+        break;
+      }
+    }
+  }
+
+  if (commentIdx !== -1) {
+    const code = snippet.substring(0, commentIdx).trimEnd();
+    const comment = snippet.substring(commentIdx);
+    return { code, comment };
+  }
+  return { code: snippet };
+}
+
 export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHeader: boolean = true): string {
   const pad = '  '.repeat(indentLevel);
 
@@ -91,13 +132,11 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
 
     case 'ExpressionBlock': {
       const snippet = node.codeSnippet.trim().replace(/;$/, '');
-      const commentMatch = snippet.match(/(\s*\/\/.*)$/);
-      if (commentMatch) {
-        const comment = commentMatch[1];
-        const withoutComment = snippet.substring(0, snippet.length - comment.length).trimEnd();
-        return `${pad}${withoutComment};${comment}\n`;
+      const { code, comment } = parseTrailingComment(snippet);
+      if (comment) {
+        return `${pad}${code}; ${comment}\n`;
       }
-      return `${pad}${snippet};\n`;
+      return `${pad}${code};\n`;
     }
 
     case 'Solana_EstablishConnection': {
@@ -113,7 +152,8 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
       for (const child of node.callbackBody) {
         bodyCode += emitTypeScript(child, indentLevel + 2, false);
       }
-      return `${pad}const subscription_${node.id} = ${node.connectionVarName}.onProgramAccountChange(\n` +
+      const safeId = sanitizeId(node.id);
+      return `${pad}const subscription_${safeId} = ${node.connectionVarName}.onProgramAccountChange(\n` +
         `${pad}  new PublicKey(${JSON.stringify(node.programAddress)}),\n` +
         `${pad}  async (${node.accountInfoParamName}) => {\n` +
         bodyCode +
@@ -123,9 +163,10 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
     }
 
     case 'Solana_SimulatePayload': {
-      let code = `${pad}const simulation_${node.id} = await ${node.connectionVarName}.simulateTransaction(${node.transactionVarName});\n`;
+      const safeId = sanitizeId(node.id);
+      let code = `${pad}const simulation_${safeId} = await ${node.connectionVarName}.simulateTransaction(${node.transactionVarName});\n`;
       if (node.throwOnError) {
-        code += `${pad}if (simulation_${node.id}.value.err) throw new Error(\`Transaction simulation failed: \${JSON.stringify(simulation_${node.id}.value.err)}\`);\n`;
+        code += `${pad}if (simulation_${safeId}.value.err) throw new Error(\`Transaction simulation failed: \${JSON.stringify(simulation_${safeId}.value.err)}\`);\n`;
       }
       return code;
     }
