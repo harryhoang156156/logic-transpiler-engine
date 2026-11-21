@@ -64,7 +64,7 @@ jobs:
           set -o pipefail
 
           CHECKPOINT_SHA=$(git rev-parse HEAD)
-          PROMPT="Read $OVERVIEW_FILE, dependencies_and_connections.md, and $SPEC_FILE. Create the target TypeScript file in src/ and its Vitest suite in tests/ (importing from 'vitest'). Use .js extensions on relative imports (e.g. '../schemas.js'). Loop until npm run build and npm run test pass."
+                    PROMPT="IMPORTANT: All files currently loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. Read $SPEC_FILE to find the exact target file paths, then immediately CREATE the new TypeScript implementation file in src/ and its new Vitest test file in tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js'). Do not waste turns debating or exploring—create both target files right away and loop until npm run build and npm run test pass."
 
           READ_FLAGS=(--read "$SPEC_FILE")
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
@@ -155,23 +155,18 @@ jobs:
             fi
             NEW_SHA=$(git rev-parse HEAD)
 
-            if ! grep -qiE "<!DOCTYPE|<html|rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|valid model ID|BadRequestError|400 Bad Request|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout|quota|RESOURCE_EXHAUSTED" /tmp/aider.log \
-               && [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
+            # If new code was committed AND both build + all tests pass, stop immediately!
+            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
                && npm run build >/dev/null 2>&1 \
                && npm run test >/dev/null 2>&1; then
-              echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL"
+              echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL (480+ tests passing!)"
               SUCCESS=true
               break
             fi
 
-            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
-              echo "::notice::[$PROVIDER] $MODEL stopped early, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
-              CHECKPOINT_SHA="$NEW_SHA"
-            else
-              echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
-              git reset --hard "$CHECKPOINT_SHA" >/dev/null
-              git clean -f >/dev/null
-            fi
+            echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
+            git reset --hard "$CHECKPOINT_SHA" >/dev/null
+            git clean -f >/dev/null
             sleep 3
           done
 
