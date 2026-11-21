@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import { verifyTypeScriptCode } from '../src/verification/compiler_guard.js';
 
 describe('compiler_guard', () => {
@@ -34,5 +36,24 @@ describe('compiler_guard', () => {
 
     expect(result.success).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('retains diagnostics from imported helper modules', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cg_test_'));
+    const helperFile = path.join(tempDir, 'helper.ts');
+
+    try {
+      // Helper has a type error (assigning string to number)
+      await fs.writeFile(helperFile, `export const num: number = "not-a-number";\n`, 'utf-8');
+
+      const entryCode = `import { num } from './helper.js';\nexport const value = num;\n`;
+      const result = await verifyTypeScriptCode(entryCode, tempDir);
+
+      expect(result.success).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+      expect(result.errors.some((err) => err.includes('TS2322'))).toBe(true);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

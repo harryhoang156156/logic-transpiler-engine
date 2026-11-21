@@ -32,20 +32,14 @@ export async function verifyTypeScriptCode(
     const program = ts.createProgram([tempFilePath], compilerOptions);
     const diagnostics = ts.getPreEmitDiagnostics(program);
 
-    // Filter to only diagnostics originating from our target file or global diagnostics
-    const relevantDiagnostics = diagnostics.filter((diag) => {
-      if (!diag.file) return true;
-      return path.resolve(diag.file.fileName) === path.resolve(tempFilePath);
-    });
-
-    if (relevantDiagnostics.length === 0) {
+    if (diagnostics.length === 0) {
       return {
         success: true,
         errors: [],
       };
     }
 
-    const errors: string[] = relevantDiagnostics.map((diag) => {
+    const errors: string[] = diagnostics.map((diag) => {
       let lineInfo = '';
       if (diag.file && diag.start !== undefined) {
         const { line, character } = diag.file.getLineAndCharacterOfPosition(diag.start);
