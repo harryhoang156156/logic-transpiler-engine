@@ -146,7 +146,10 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
       const snippet = node.codeSnippet.trim().replace(/;$/, '');
       const { code, comment } = parseTrailingComment(snippet);
       if (snippet.startsWith('import ')) {
-        return `${pad}${snippet};\n`;
+        if (comment) {
+          return `${pad}${code}; ${comment}\n`;
+        }
+        return `${pad}${code};\n`;
       }
       if (comment) {
         return `${pad}${code}; ${comment}\n`;

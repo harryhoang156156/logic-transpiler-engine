@@ -60,7 +60,6 @@ function replaceNodeInTree(
 ): boolean {
   for (const key of CHILD_ARRAY_KEYS) {
     if (key in currentNode) {
-      const children = (nodeKeys: any) => nodeKeys; // noop
       const childrenArr = (currentNode as any)[key];
       if (Array.isArray(childrenArr)) {
         for (let i = 0; i < childrenArr.length; i++) {
@@ -86,16 +85,37 @@ export function applyAtomicPatches(
   rootAst: ASTNode,
   operations: AtomicPatchOperation[]
 ): ASTNode {
-  // Deep clone to ensure atomic transaction isolation
-  let clonedAst: ASTNode = structuredClone(rootAst);
-
   // Validate all new nodes up front
   for (const op of operations) {
     ASTNodeSchema.parse(op.newNode);
   }
 
-  // Sort operations by depth (ancestors first or descendants first) to handle overlapping targets
-  // Specifically, if an ancestor and descendant are both targeted, sort by depth descending (deepest first)
+  // Check preconditions before modifying anything (deep clone happens only after checks, or we operate on a clone)
+  let clonedAst: ASTNode = structuredClone(rootAst);
+
+  const existingIds = new Set<string>();
+  collectNodeIds(clonedAst, existingIds);
+
+  const seenTargets = new Set<string>();
+
+  for (const op of operations) {
+    if (op.action === 'REPLACE') {
+      if (!op.targetNodeId) {
+        throw new Error('AtomicPatchOperation with action "REPLACE" must have targetNodeId.');
+      }
+      if (!existingIds.has(op.targetNodeId)) {
+        throw new Error(`Target node id "${op.targetNodeId}" not found in AST.`);
+      }
+      if (seenTargets.has(op.targetNodeId)) {
+        throw new Error(`Duplicate replacement target node id "${op.targetNodeId}" found.`);
+      }
+      seenTargets.add(op.targetNodeId);
+    } else if (op.action !== 'APPEND_TO_MODULE') {
+      throw new Error(`Unknown action: "${(op as any).action}".`);
+    }
+  }
+
+  // Sort operations by depth descending to handle nested replacements properly
   const sortedOperations = [...operations].sort((a, b) => {
     if (a.action === 'REPLACE' && b.action === 'REPLACE' && a.targetNodeId && b.targetNodeId) {
       const pathA = findNodePath(clonedAst, a.targetNodeId);
@@ -106,23 +126,6 @@ export function applyAtomicPatches(
     }
     return 0;
   });
-
-  // Check preconditions before modifying
-  const existingIds = new Set<string>();
-  collectNodeIds(clonedAst, existingIds);
-
-  for (const op of sortedOperations) {
-    if (op.action === 'REPLACE') {
-      if (!op.targetNodeId) {
-        throw new Error('AtomicPatchOperation with action "REPLACE" must have targetNodeId.');
-      }
-      if (!existingIds.has(op.targetNodeId)) {
-        throw new Error(`Target node id "${op.targetNodeId}" not found in AST.`);
-      }
-    } else if (op.action !== 'APPEND_TO_MODULE') {
-      throw new Error(`Unknown action: "${(op as any).action}".`);
-    }
-  }
 
   // Apply operations
   for (const op of sortedOperations) {
@@ -135,8 +138,7 @@ export function applyAtomicPatches(
       }
       const replaced = replaceNodeInTree(clonedAst, targetId, clonedNewNode);
       if (!replaced) {
-        // If an ancestor replacement already replaced a subtree containing this target, we can safely ignore or handle it
-        continue;
+        throw new Error(`Target node id "${targetId}" not found in AST during replacement.`);
       }
     } else if (op.action === 'APPEND_TO_MODULE') {
       if (clonedAst.type !== 'ModuleContainer') {

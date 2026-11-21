@@ -68,7 +68,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
       const resolvedSrc = path.resolve(options.sourceFilePath);
       const resolvedOut = path.resolve(options.outputFilePath);
       if (resolvedSrc === resolvedOut) {
-        throw new Error('outputFilePath cannot be the same as sourceFilePath');
+        throw new Error('outputFilePath cannot be the same as sourceFilePath in audit-only mode');
       }
       await fs.mkdir(path.dirname(options.outputFilePath), { recursive: true });
       await fs.writeFile(options.outputFilePath, serializedReport, 'utf8');
@@ -125,7 +125,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
       if (options.outputFilePath) {
         const resolvedSrc = options.sourceFilePath ? path.resolve(options.sourceFilePath) : null;
         const resolvedOut = path.resolve(options.outputFilePath);
-        if (resolvedSrc && resolvedSrc === resolvedOut) {
+        if (resolvedSrc && resolvedSrc === resolvedOut && options.auditOnly) {
           throw new Error('outputFilePath cannot be the same as sourceFilePath');
         }
         await fs.mkdir(path.dirname(options.outputFilePath), { recursive: true });
