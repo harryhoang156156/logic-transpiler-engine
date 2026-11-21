@@ -85,13 +85,7 @@ export function applyAtomicPatches(
       if (!existingIds.has(op.targetNodeId)) {
         throw new Error(`Target node id "${op.targetNodeId}" not found in AST.`);
       }
-    } else if (op.action === 'APPEND_TO_MODULE') {
-      if (clonedAst.type !== 'ModuleContainer') {
-        throw new Error(
-          `Cannot append to module: root AST node type is "${clonedAst.type}", expected "ModuleContainer".`
-        );
-      }
-    } else {
+    } else if (op.action !== 'APPEND_TO_MODULE') {
       throw new Error(`Unknown action: "${(op as any).action}".`);
     }
   }

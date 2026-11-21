@@ -105,6 +105,46 @@ describe('atomic_merger', () => {
     expect((result.children[1] as AsyncFunctionBlock).functionName).toBe('helperFunction');
   });
 
+  it('allows APPEND_TO_MODULE after an earlier REPLACE operation that replaces root with a ModuleContainer', () => {
+    const nonModuleRoot: ExpressionBlock = {
+      id: 'initial_root',
+      type: 'ExpressionBlock',
+      codeSnippet: 'console.log("initial");',
+    };
+
+    const replacementRoot: ModuleContainer = {
+      id: 'new_root_mod',
+      type: 'ModuleContainer',
+      moduleName: 'replaced_module',
+      exports: [],
+      children: [],
+    };
+
+    const appendNode: ExpressionBlock = {
+      id: 'appended_expr',
+      type: 'ExpressionBlock',
+      codeSnippet: 'const z = 42;',
+    };
+
+    const operations: AtomicPatchOperation[] = [
+      {
+        action: 'REPLACE',
+        targetNodeId: 'initial_root',
+        newNode: replacementRoot,
+      },
+      {
+        action: 'APPEND_TO_MODULE',
+        newNode: appendNode,
+      },
+    ];
+
+    const result = applyAtomicPatches(nonModuleRoot, operations) as ModuleContainer;
+    expect(result.type).toBe('ModuleContainer');
+    expect(result.id).toBe('new_root_mod');
+    expect(result.children.length).toBe(1);
+    expect(result.children[0].id).toBe('appended_expr');
+  });
+
   it('preserves atomicity: if 1 operation is valid and 1 is invalid, throws and leaves input untouched', () => {
     const baseAst = createBaseAst();
     const originalSnapshot = JSON.parse(JSON.stringify(baseAst));
