@@ -35,23 +35,17 @@ function parseTrailingComment(snippet: string): { code: string; comment?: string
       if (char === '"' || char === "'" || char === '`') {
         inString = char;
       } else if (char === '/' && i + 1 < snippet.length && snippet[i + 1] === '/') {
-        // Line comment encountered outside a string literal.
-        // Check if there is any non-whitespace code after this comment line.
         const newlineIdx = snippet.indexOf('\n', i + 2);
         if (newlineIdx === -1) {
-          // Comment runs to the very end of the snippet: this is a terminal comment.
           terminalCommentIdx = i;
           break;
         } else {
-          // Check if snippet after newline contains non-whitespace code
           const remainder = snippet.substring(newlineIdx + 1);
           if (remainder.trim().length === 0) {
             terminalCommentIdx = i;
             break;
           } else {
-            // Non-terminal line comment: skip comment text through newline.
-            // Do not update string state while inside comment text.
-            i = newlineIdx; // loop will increment to newlineIdx + 1
+            i = newlineIdx;
             continue;
           }
         }
@@ -151,6 +145,9 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
     case 'ExpressionBlock': {
       const snippet = node.codeSnippet.trim().replace(/;$/, '');
       const { code, comment } = parseTrailingComment(snippet);
+      if (snippet.startsWith('import ')) {
+        return `${pad}${snippet};\n`;
+      }
       if (comment) {
         return `${pad}${code}; ${comment}\n`;
       }

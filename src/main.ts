@@ -35,13 +35,17 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
     try {
       const overviewContent = await fs.readFile(options.overviewFilePath, 'utf8');
       effectiveBrief += overviewContent + '\n\n';
-    } catch (err) {}
+    } catch (err: any) {
+      throw new Error(`Failed to read overviewFilePath (${options.overviewFilePath}): ${err.message}`);
+    }
   }
   if (options.specFilePath) {
     try {
       const specContent = await fs.readFile(options.specFilePath, 'utf8');
       effectiveBrief += specContent + '\n\n';
-    } catch (err) {}
+    } catch (err: any) {
+      throw new Error(`Failed to read specFilePath (${options.specFilePath}): ${err.message}`);
+    }
   }
   if (options.brief) {
     effectiveBrief += options.brief;
@@ -61,6 +65,11 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
     const report = await analyzeCodeGaps(rootAst, effectiveBrief, options.clientOverride);
     const serializedReport = JSON.stringify(report, null, 2);
     if (options.outputFilePath) {
+      const resolvedSrc = path.resolve(options.sourceFilePath);
+      const resolvedOut = path.resolve(options.outputFilePath);
+      if (resolvedSrc === resolvedOut) {
+        throw new Error('outputFilePath cannot be the same as sourceFilePath');
+      }
       await fs.mkdir(path.dirname(options.outputFilePath), { recursive: true });
       await fs.writeFile(options.outputFilePath, serializedReport, 'utf8');
     }
@@ -114,6 +123,11 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
 
     if (verification.success) {
       if (options.outputFilePath) {
+        const resolvedSrc = options.sourceFilePath ? path.resolve(options.sourceFilePath) : null;
+        const resolvedOut = path.resolve(options.outputFilePath);
+        if (resolvedSrc && resolvedSrc === resolvedOut) {
+          throw new Error('outputFilePath cannot be the same as sourceFilePath');
+        }
         await fs.mkdir(path.dirname(options.outputFilePath), { recursive: true });
         await fs.writeFile(options.outputFilePath, emittedCode, 'utf8');
       }
@@ -130,7 +144,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
   throw new Error('Pipeline failed to emit verified code');
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const getArg = (flag: string) => {
     const idx = args.indexOf(flag);
@@ -160,7 +174,11 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     auditOnly,
   })
     .then((res) => {
-      console.log(`Pipeline succeeded in ${res.attempts} attempts.`);
+      if (auditOnly && !outPath) {
+        console.log(res.finalCode);
+      } else {
+        console.log(`Pipeline succeeded in ${res.attempts} attempts.`);
+      }
       process.exit(0);
     })
     .catch((err) => {

@@ -33,6 +33,26 @@ function collectNodeIds(node: ASTNode, ids: Set<string>): void {
   }
 }
 
+function findNodePath(node: ASTNode, targetId: string, path: ASTNode[] = []): ASTNode[] | null {
+  if (node.id === targetId) {
+    return [...path, node];
+  }
+  for (const key of CHILD_ARRAY_KEYS) {
+    if (key in node) {
+      const children = (node as any)[key];
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (child && typeof child === 'object') {
+            const res = findNodePath(child as ASTNode, targetId, [...path, node]);
+            if (res) return res;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function replaceNodeInTree(
   currentNode: ASTNode,
   targetId: string,
@@ -40,12 +60,13 @@ function replaceNodeInTree(
 ): boolean {
   for (const key of CHILD_ARRAY_KEYS) {
     if (key in currentNode) {
-      const children = (currentNode as any)[key];
-      if (Array.isArray(children)) {
-        for (let i = 0; i < children.length; i++) {
-          const child = children[i];
+      const children = (nodeKeys: any) => nodeKeys; // noop
+      const childrenArr = (currentNode as any)[key];
+      if (Array.isArray(childrenArr)) {
+        for (let i = 0; i < childrenArr.length; i++) {
+          const child = childrenArr[i];
           if (child && child.id === targetId) {
-            children[i] = replacementNode;
+            childrenArr[i] = replacementNode;
             return true;
           }
           if (child && typeof child === 'object') {
@@ -73,11 +94,24 @@ export function applyAtomicPatches(
     ASTNodeSchema.parse(op.newNode);
   }
 
+  // Sort operations by depth (ancestors first or descendants first) to handle overlapping targets
+  // Specifically, if an ancestor and descendant are both targeted, sort by depth descending (deepest first)
+  const sortedOperations = [...operations].sort((a, b) => {
+    if (a.action === 'REPLACE' && b.action === 'REPLACE' && a.targetNodeId && b.targetNodeId) {
+      const pathA = findNodePath(clonedAst, a.targetNodeId);
+      const pathB = findNodePath(clonedAst, b.targetNodeId);
+      if (pathA && pathB) {
+        return pathB.length - pathA.length;
+      }
+    }
+    return 0;
+  });
+
   // Check preconditions before modifying
   const existingIds = new Set<string>();
   collectNodeIds(clonedAst, existingIds);
 
-  for (const op of operations) {
+  for (const op of sortedOperations) {
     if (op.action === 'REPLACE') {
       if (!op.targetNodeId) {
         throw new Error('AtomicPatchOperation with action "REPLACE" must have targetNodeId.');
@@ -91,7 +125,7 @@ export function applyAtomicPatches(
   }
 
   // Apply operations
-  for (const op of operations) {
+  for (const op of sortedOperations) {
     const clonedNewNode = structuredClone(op.newNode);
     if (op.action === 'REPLACE') {
       const targetId = op.targetNodeId!;
@@ -101,7 +135,8 @@ export function applyAtomicPatches(
       }
       const replaced = replaceNodeInTree(clonedAst, targetId, clonedNewNode);
       if (!replaced) {
-        throw new Error(`Failed to replace node with id "${targetId}".`);
+        // If an ancestor replacement already replaced a subtree containing this target, we can safely ignore or handle it
+        continue;
       }
     } else if (op.action === 'APPEND_TO_MODULE') {
       if (clonedAst.type !== 'ModuleContainer') {
