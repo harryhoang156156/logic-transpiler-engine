@@ -98,4 +98,88 @@ describe('gap_analyzer', () => {
       /hallucinated non-existent targetNodeId/
     );
   });
+
+  it('throws an error when report omits a required module', async () => {
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    actions: [
+                      {
+                        targetNodeId: 'node_2',
+                        resolution: 'KEEP_AS_IS',
+                        reasoning: 'Keep func',
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    await expect(analyzeCodeGaps(sampleAst, 'Add feature', mockClient)).rejects.toThrow(
+      /Report missing resolution for required module or function node:/
+    );
+  });
+
+  it('throws an error when report omits a required function', async () => {
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    actions: [
+                      {
+                        targetNodeId: 'node_1',
+                        resolution: 'KEEP_AS_IS',
+                        reasoning: 'Keep module',
+                      },
+                    ],
+                  }),
+                },
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    await expect(analyzeCodeGaps(sampleAst, 'Add feature', mockClient)).rejects.toThrow(
+      /Report missing resolution for required module or function node:/
+    );
+  });
+
+  it('throws an error when report provides an empty actions array', async () => {
+    const mockClient = {
+      chat: {
+        completions: {
+          create: async () => ({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    actions: [],
+                  }),
+                },
+              },
+            ],
+          }),
+        },
+      },
+    };
+
+    await expect(analyzeCodeGaps(sampleAst, 'Add feature', mockClient)).rejects.toThrow(
+      /Report missing resolution for required module or function node:/
+    );
+  });
 });
