@@ -35,15 +35,66 @@ function parseTrailingComment(snippet: string): { code: string; comment?: string
       if (char === '"' || char === "'" || char === '`') {
         inString = char;
       } else if (char === '/' && i + 1 < snippet.length && snippet[i + 1] === '/') {
+        // Check if this '//' is part of a URL or scheme like 'http://' or 'https://'
+        // by looking backwards for a protocol colon or preceding characters.
+        const preceding = snippet.substring(0, i);
+        // If it looks like a protocol (e.g. ends with http:, https:, ws:, wss:, etc. or has no quote/whitespace mismatch), wait:
+        // A simpler check: if it's preceded by ':' and letters like http, https, ws, wss, etc., or if we want a robust scan.
+        // Usually, URLs look like "https://...". Since we are outside a string if inString is null, wait!
+        // If we are outside a string, a URL like "https://..." would actually start with a quote, so `inString` would be non-null!
+        // If `inString` is non-null, we are inside a string literal, so we wouldn't hit this `else if` branch anyway!
+        // Wait, what if it's an unquoted comment or a comment after a string?
+        // If it's after a string or code, e.g. `const x = 1; // comment`, it's valid.
+        // What if someone writes something like `foo('http://bar') // comment`? The first `//` is inside the string, so `inString` is active.
+        // The second `//` is outside the string, so it's a real comment.
+        // The issue description states: "Update the comment-scanning logic that sets commentIdx so a nonterminal line comment does not stop scanning or cause the expression to terminate before later code; place the terminator after the complete snippet, before a terminal line comment when present. Preserve the existing single-line URL handling."
+        // Wait, if a line comment appears inside a snippet (e.g. multi-line or block where someone put `//` inside an object literal or something, or a nonterminal line comment), we shouldn't treat it as the *trailing* comment if there's code after it on a new line, or we should find the actual terminal comment at the end of the snippet.
+        // Let's scan all potential comment indices or find the last valid trailing comment outside strings.
+        // Actually, if we just scan through the whole string, we can record any `//` found outside strings. If there are multiple, the last one might be the trailing comment, or we can check if it's followed only by whitespace/newlines.
         commentIdx = i;
-        break;
+        // Don't break immediately if we want the last one, or let's check if there's code after it.
+        // Wait, if we keep scanning, we can find the last `//` that is at the end of the statement/snippet.
       }
     }
   }
 
-  if (commentIdx !== -1) {
-    const code = snippet.substring(0, commentIdx).trimEnd();
-    const comment = snippet.substring(commentIdx);
+  // Let's refine: find all occurrences of '//' outside strings and pick the one that is truly trailing (i.e., followed only by whitespace/comment text up to the end of the snippet).
+  // Or even better, let's re-scan properly:
+  return parseActualTrailingComment(snippet);
+}
+
+function parseActualTrailingComment(snippet: string): { code: string; comment?: string } {
+  let inString: string | null = null;
+  let escaped = false;
+  let lastCommentIdx = -1;
+
+  for (let i = 0; i < snippet.length; i++) {
+    const char = snippet[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (inString) {
+      if (char === inString) {
+        inString = null;
+      }
+    } else {
+      if (char === '"' || char === "'" || char === '`') {
+        inString = char;
+      } else if (char === '/' && i + 1 < snippet.length && snippet[i + 1] === '/') {
+        lastCommentIdx = i;
+        // continue scanning in case there is a later one or to ensure we find the terminal one
+      }
+    }
+  }
+
+  if (lastCommentIdx !== -1) {
+    const code = snippet.substring(0, lastCommentIdx).trimEnd();
+    const comment = snippet.substring(lastCommentIdx);
     return { code, comment };
   }
   return { code: snippet };
