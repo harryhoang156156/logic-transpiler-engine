@@ -141,25 +141,25 @@ describe('ts_emitter', () => {
 
   it('emits File and SQLite/Redis nodes', () => {
     const logNode: ASTNode = { id: '1', type: 'File_AppendLog', filePath: 'a.txt', messageExpression: '"msg"' };
-    expect(emitTypeScript(logNode, 0, false)).toContain("await fs.appendFile('a.txt'");
+    expect(emitTypeScript(logNode, 0, false)).toContain('await fs.appendFile("a.txt"');
 
     const sqliteInit: ASTNode = { id: '2', type: 'Sqlite_InitDatabase', dbVarName: 'db', dbFilePath: 'test.db' };
-    expect(emitTypeScript(sqliteInit, 0, false)).toContain("const db = new Database('test.db');");
+    expect(emitTypeScript(sqliteInit, 0, false)).toContain('const db = new Database("test.db");');
 
     const sqliteWrite: ASTNode = { id: '3', type: 'Sqlite_ExecuteWrite', dbVarName: 'db', sqlQuery: 'INSERT...', paramsArrayExpression: '[]' };
-    expect(emitTypeScript(sqliteWrite, 0, false)).toContain("db.prepare('INSERT...').run(...[]);");
+    expect(emitTypeScript(sqliteWrite, 0, false)).toContain('db.prepare("INSERT...").run(...[]);');
 
     const sqliteRead: ASTNode = { id: '4', type: 'Sqlite_QueryRead', dbVarName: 'db', resultVarName: 'res', readMode: 'get', sqlQuery: 'SELECT...', paramsArrayExpression: '[]' };
-    expect(emitTypeScript(sqliteRead, 0, false)).toContain("const res = db.prepare('SELECT...').get(...[]);");
+    expect(emitTypeScript(sqliteRead, 0, false)).toContain('const res = db.prepare("SELECT...").get(...[]);');
 
     const redisInit: ASTNode = { id: '5', type: 'Redis_InitClient', redisVarName: 'redis', redisUrlEnvVar: 'REDIS_URL' };
     expect(emitTypeScript(redisInit, 0, false)).toContain("const redis = new Redis(process.env.REDIS_URL || 'redis://127.0.0.1:6379');");
 
     const redisPush: ASTNode = { id: '6', type: 'Redis_QueuePush', redisVarName: 'redis', queueKey: 'q', payloadExpression: 'data' };
-    expect(emitTypeScript(redisPush, 0, false)).toContain("await redis.rpush('q', JSON.stringify(data));");
+    expect(emitTypeScript(redisPush, 0, false)).toContain('await redis.rpush("q", JSON.stringify(data));');
 
     const redisPop: ASTNode = { id: '7', type: 'Redis_QueueBlockingPop', redisVarName: 'redis', queueKey: 'q', resultVarName: 'res', timeoutSeconds: 5 };
-    expect(emitTypeScript(redisPop, 0, false)).toContain("const res = await redis.blpop('q', 5);");
+    expect(emitTypeScript(redisPop, 0, false)).toContain('const res = await redis.blpop("q", 5);');
   });
 
   it('compiles full nested ModuleContainer with TypeScript compiler', () => {
