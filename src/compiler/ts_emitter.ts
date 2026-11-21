@@ -90,8 +90,14 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
     }
 
     case 'ExpressionBlock': {
-      const cleanSnippet = node.codeSnippet.trim().replace(/;$/, '');
-      return `${pad}${cleanSnippet};\n`;
+      const snippet = node.codeSnippet.trim().replace(/;$/, '');
+      const commentMatch = snippet.match(/(\s*\/\/.*)$/);
+      if (commentMatch) {
+        const comment = commentMatch[1];
+        const withoutComment = snippet.substring(0, snippet.length - comment.length).trimEnd();
+        return `${pad}${withoutComment};${comment}\n`;
+      }
+      return `${pad}${snippet};\n`;
     }
 
     case 'Solana_EstablishConnection': {
@@ -107,8 +113,8 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
       for (const child of node.callbackBody) {
         bodyCode += emitTypeScript(child, indentLevel + 2, false);
       }
-      return `${pad}const subscriptionId = ${node.connectionVarName}.onProgramAccountChange(\n` +
-        `${pad}  new PublicKey('${node.programAddress}'),\n` +
+      return `${pad}const subscription_${node.id} = ${node.connectionVarName}.onProgramAccountChange(\n` +
+        `${pad}  new PublicKey(${JSON.stringify(node.programAddress)}),\n` +
         `${pad}  async (${node.accountInfoParamName}) => {\n` +
         bodyCode +
         `${pad}  },\n` +
@@ -117,27 +123,27 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
     }
 
     case 'Solana_SimulatePayload': {
-      let code = `${pad}const simulation = await ${node.connectionVarName}.simulateTransaction(${node.transactionVarName});\n`;
+      let code = `${pad}const simulation_${node.id} = await ${node.connectionVarName}.simulateTransaction(${node.transactionVarName});\n`;
       if (node.throwOnError) {
-        code += `${pad}if (simulation.value.err) throw new Error(\`Transaction simulation failed: \${JSON.stringify(simulation.value.err)}\`);\n`;
+        code += `${pad}if (simulation_${node.id}.value.err) throw new Error(\`Transaction simulation failed: \${JSON.stringify(simulation_${node.id}.value.err)}\`);\n`;
       }
       return code;
     }
 
     case 'File_AppendLog': {
-      return `${pad}await fs.appendFile('${node.filePath}', \`\${new Date().toISOString()} - \${${node.messageExpression}}\\n\`);\n`;
+      return `${pad}await fs.appendFile(${JSON.stringify(node.filePath)}, \`\${new Date().toISOString()} - \${${node.messageExpression}}\\n\`);\n`;
     }
 
     case 'Sqlite_InitDatabase': {
-      return `${pad}const ${node.dbVarName} = new Database('${node.dbFilePath}');\n`;
+      return `${pad}const ${node.dbVarName} = new Database(${JSON.stringify(node.dbFilePath)});\n`;
     }
 
     case 'Sqlite_ExecuteWrite': {
-      return `${pad}${node.dbVarName}.prepare('${node.sqlQuery}').run(...${node.paramsArrayExpression});\n`;
+      return `${pad}${node.dbVarName}.prepare(${JSON.stringify(node.sqlQuery)}).run(...${node.paramsArrayExpression});\n`;
     }
 
     case 'Sqlite_QueryRead': {
-      return `${pad}const ${node.resultVarName} = ${node.dbVarName}.prepare('${node.sqlQuery}').${node.readMode}(...${node.paramsArrayExpression});\n`;
+      return `${pad}const ${node.resultVarName} = ${node.dbVarName}.prepare(${JSON.stringify(node.sqlQuery)}).${node.readMode}(...${node.paramsArrayExpression});\n`;
     }
 
     case 'Redis_InitClient': {
@@ -145,11 +151,11 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
     }
 
     case 'Redis_QueuePush': {
-      return `${pad}await ${node.redisVarName}.rpush('${node.queueKey}', JSON.stringify(${node.payloadExpression}));\n`;
+      return `${pad}await ${node.redisVarName}.rpush(${JSON.stringify(node.queueKey)}, JSON.stringify(${node.payloadExpression}));\n`;
     }
 
     case 'Redis_QueueBlockingPop': {
-      return `${pad}const ${node.resultVarName} = await ${node.redisVarName}.blpop('${node.queueKey}', ${node.timeoutSeconds});\n`;
+      return `${pad}const ${node.resultVarName} = await ${node.redisVarName}.blpop(${JSON.stringify(node.queueKey)}, ${node.timeoutSeconds});\n`;
     }
 
     default:
