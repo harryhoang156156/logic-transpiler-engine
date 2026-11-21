@@ -2,6 +2,8 @@ name: CI Verify Main
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 jobs:
   verify:
     runs-on: ubuntu-latest
