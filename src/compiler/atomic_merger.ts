@@ -66,7 +66,7 @@ export function applyAtomicPatches(
   operations: AtomicPatchOperation[]
 ): ASTNode {
   // Deep clone to ensure atomic transaction isolation
-  const clonedAst: ASTNode = structuredClone(rootAst);
+  let clonedAst: ASTNode = structuredClone(rootAst);
 
   // Validate all new nodes up front
   for (const op of operations) {
@@ -98,18 +98,24 @@ export function applyAtomicPatches(
 
   // Apply operations
   for (const op of operations) {
+    const clonedNewNode = structuredClone(op.newNode);
     if (op.action === 'REPLACE') {
       const targetId = op.targetNodeId!;
       if (clonedAst.id === targetId) {
-        // Replacing the root node itself
-        return ASTNodeSchema.parse(op.newNode);
+        clonedAst = ASTNodeSchema.parse(clonedNewNode);
+        continue;
       }
-      const replaced = replaceNodeInTree(clonedAst, targetId, op.newNode);
+      const replaced = replaceNodeInTree(clonedAst, targetId, clonedNewNode);
       if (!replaced) {
         throw new Error(`Failed to replace node with id "${targetId}".`);
       }
     } else if (op.action === 'APPEND_TO_MODULE') {
-      (clonedAst as any).children.push(op.newNode);
+      if (clonedAst.type !== 'ModuleContainer') {
+        throw new Error(
+          `Cannot append to module: root AST node type is "${clonedAst.type}", expected "ModuleContainer".`
+        );
+      }
+      (clonedAst as any).children.push(clonedNewNode);
     }
   }
 
