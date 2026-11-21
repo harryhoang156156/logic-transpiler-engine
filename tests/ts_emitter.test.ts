@@ -116,11 +116,11 @@ describe('ts_emitter', () => {
     const node: ASTNode = {
       id: '1',
       type: 'ExpressionBlock',
-      codeSnippet: 'const url = "https://example.com/api";'
+      codeSnippet: 'const url = "https://example.com/api"; // actual comment'
     };
     const emitted = emitTypeScript(node, 0, false);
     expect(emitted).toContain('const url = "https://example.com/api";');
-    expect(emitted).not.toContain('//');
+    expect(emitted).toContain('// actual comment');
   });
 
   it('emits Solana nodes with hyphenated IDs', () => {
