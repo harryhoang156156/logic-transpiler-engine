@@ -29,7 +29,7 @@ permissions:
 jobs:
   fix-pr:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -88,7 +88,7 @@ jobs:
             fi
           done < <(git diff --name-only main...HEAD -- src/ tests/)
 
-          PROMPT="Apply the following PR review fixes to the target files: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Follow $OVERVIEW_FILE and dependencies_and_connections.md, preserve .js extensions on relative imports, and update tests if needed. Do not waste turns searching the repository—all target files and dependencies are already loaded in chat. Loop until npm run build and npm run test pass."
+          PROMPT="IMPORTANT: The files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts) are strictly REFERENCE DOCUMENTS—do NOT edit them unless explicitly requested below. Edit ONLY the PR target files already loaded in chat (${PR_FILES[*]}) to apply these fixes: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Preserve .js extensions on relative imports and update tests if needed. Do not waste turns searching the repository—apply the fixes immediately and loop until npm run build and npm run test pass."
 
           READ_FLAGS=()
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
@@ -180,8 +180,7 @@ jobs:
             fi
             NEW_SHA=$(git rev-parse HEAD)
 
-            if ! grep -qiE "<!DOCTYPE|<html|rate limited|RateLimitError|429 Too Many Requests|Request too large|413|NotFoundError|model_not_found|No endpoints available|valid model ID|BadRequestError|400 Bad Request|AuthenticationError|401|API key.*not found|without an .* API key|No .* API key|Missing API key|ContextWindowExceededError|ServiceUnavailableError|503|APIConnectionError|InternalServerError|Timeout|quota|RESOURCE_EXHAUSTED" /tmp/aider.log \
-               && [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
+            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
                && npm run build >/dev/null 2>&1 \
                && npm run test >/dev/null 2>&1; then
               echo "Successfully completed Aider fix loop via [$PROVIDER] $MODEL"
@@ -189,14 +188,9 @@ jobs:
               break
             fi
 
-            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] && npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
-              echo "::notice::[$PROVIDER] $MODEL stopped early, but left a passing build & test checkpoint ($NEW_SHA). Keeping progress!"
-              CHECKPOINT_SHA="$NEW_SHA"
-            else
-              echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
-              git reset --hard "$CHECKPOINT_SHA" >/dev/null
-              git clean -f >/dev/null
-            fi
+            echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
+            git reset --hard "$CHECKPOINT_SHA" >/dev/null
+            git clean -f >/dev/null
             sleep 3
           done
 
