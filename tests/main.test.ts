@@ -30,7 +30,7 @@ describe('main pipeline', () => {
                   },
                 ],
               };
-              return { choices: [{ message: { content: JSON.stringify(brokenNode) } }] };
+              return { choices: [{ message: { content: JSON.stringify({ ast: brokenNode }) } }] };
             } else {
               const fixedNode: ASTNode = {
                 id: 'mod_1',
@@ -45,7 +45,7 @@ describe('main pipeline', () => {
                   },
                 ],
               };
-              return { choices: [{ message: { content: JSON.stringify(fixedNode) } }] };
+              return { choices: [{ message: { content: JSON.stringify({ ast: fixedNode }) } }] };
             }
           },
         },
