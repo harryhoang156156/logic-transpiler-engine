@@ -4,7 +4,7 @@ import { SYSTEM_PROMPT_AUDITOR, buildAuditPrompt } from '../client/prompts.js';
 
 function collectNodeIds(node: ASTNode, ids = new Set<string>()): Set<string> {
   if (!node) return ids;
-  if (node.id) {
+  if (typeof node.id === 'string') {
     ids.add(node.id);
   }
   if ('children' in node && Array.isArray(node.children)) {
@@ -27,6 +27,35 @@ function collectNodeIds(node: ASTNode, ids = new Set<string>()): Set<string> {
   }
   if ('callbackBody' in node && Array.isArray(node.callbackBody)) {
     for (const child of node.callbackBody) collectNodeIds(child, ids);
+  }
+  return ids;
+}
+
+function collectModuleAndFunctionNodeIds(node: ASTNode, ids = new Set<string>()): Set<string> {
+  if (!node) return ids;
+  if ((node.type === 'ModuleContainer' || node.type === 'AsyncFunctionBlock') && typeof node.id === 'string') {
+    ids.add(node.id);
+  }
+  if ('children' in node && Array.isArray(node.children)) {
+    for (const child of node.children) collectModuleAndFunctionNodeIds(child, ids);
+  }
+  if ('body' in node && Array.isArray(node.body)) {
+    for (const child of node.body) collectModuleAndFunctionNodeIds(child, ids);
+  }
+  if ('tryBranch' in node && Array.isArray(node.tryBranch)) {
+    for (const child of node.tryBranch) collectModuleAndFunctionNodeIds(child, ids);
+  }
+  if ('catchBranch' in node && Array.isArray(node.catchBranch)) {
+    for (const child of node.catchBranch) collectModuleAndFunctionNodeIds(child, ids);
+  }
+  if ('trueBranch' in node && Array.isArray(node.trueBranch)) {
+    for (const child of node.trueBranch) collectModuleAndFunctionNodeIds(child, ids);
+  }
+  if ('falseBranch' in node && Array.isArray(node.falseBranch)) {
+    for (const child of node.falseBranch) collectModuleAndFunctionNodeIds(child, ids);
+  }
+  if ('callbackBody' in node && Array.isArray(node.callbackBody)) {
+    for (const child of node.callbackBody) collectModuleAndFunctionNodeIds(child, ids);
   }
   return ids;
 }
@@ -75,6 +104,14 @@ export async function analyzeCodeGaps(
       if (!existingIds.has(item.targetNodeId)) {
         throw new Error(`LLM hallucinated non-existent targetNodeId: ${item.targetNodeId}`);
       }
+    }
+  }
+
+  const requiredIds = collectModuleAndFunctionNodeIds(existingAst);
+  const coveredIds = new Set(report.actions.map(a => a.targetNodeId));
+  for (const reqId of requiredIds) {
+    if (!coveredIds.has(reqId)) {
+      throw new Error(`Report missing resolution for required module or function node: ${reqId}`);
     }
   }
 

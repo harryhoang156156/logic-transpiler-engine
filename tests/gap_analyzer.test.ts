@@ -32,6 +32,11 @@ describe('gap_analyzer', () => {
                   content: JSON.stringify({
                     actions: [
                       {
+                        targetNodeId: 'node_1',
+                        resolution: 'KEEP_AS_IS',
+                        reasoning: 'Keep module',
+                      },
+                      {
                         targetNodeId: 'node_2',
                         resolution: 'MUTATE_EXISTING',
                         reasoning: 'Needs update',
@@ -47,7 +52,7 @@ describe('gap_analyzer', () => {
     };
 
     const report = await analyzeCodeGaps(sampleAst, 'Add feature', mockClient);
-    expect(report.actions).toHaveLength(1);
+    expect(report.actions).toHaveLength(2);
 
     const subgraphs = extractTargetSubgraphs(sampleAst, report);
     expect(subgraphs.size).toBe(1);
@@ -64,6 +69,16 @@ describe('gap_analyzer', () => {
                 message: {
                   content: JSON.stringify({
                     actions: [
+                      {
+                        targetNodeId: 'node_1',
+                        resolution: 'KEEP_AS_IS',
+                        reasoning: 'Keep module',
+                      },
+                      {
+                        targetNodeId: 'node_2',
+                        resolution: 'KEEP_AS_IS',
+                        reasoning: 'Keep func',
+                      },
                       {
                         targetNodeId: 'non_existent',
                         resolution: 'MUTATE_EXISTING',
