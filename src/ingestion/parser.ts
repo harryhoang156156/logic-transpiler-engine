@@ -199,9 +199,8 @@ function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile): AS
 }
 
 function parseStatement(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode | null {
-  // Preserve import declarations as ExpressionBlocks so imports are retained
   if (ts.isImportDeclaration(node)) {
-    return parseExpressionBlock(node, sourceFile);
+    return null;
   }
 
   if (ts.isFunctionDeclaration(node)) {

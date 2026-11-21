@@ -98,14 +98,19 @@ export async function analyzeCodeGaps(
   });
 
   const existingIds = collectNodeIds(existingAst);
+  const requiredModAndFuncIds = collectModuleAndFunctionNodeIds(existingAst);
 
   for (const item of report.actions) {
-    if (item.resolution === 'MUTATE_EXISTING' || item.resolution === 'KEEP_AS_IS') {
-      if (!existingIds.has(item.targetNodeId)) {
-        // Fallback or lenient validation for overlapping/changed IDs
-        continue;
-      }
+    if (!existingIds.has(item.targetNodeId)) {
+      throw new Error(`LLM hallucinated non-existent targetNodeId: "${item.targetNodeId}"`);
     }
+    if (requiredModAndFuncIds.has(item.targetNodeId)) {
+      requiredModAndFuncIds.delete(item.targetNodeId);
+    }
+  }
+
+  if (requiredModAndFuncIds.size > 0) {
+    throw new Error(`Report missing resolution for required module or function node: ${Array.from(requiredModAndFuncIds).join(', ')}`);
   }
 
   return report;
