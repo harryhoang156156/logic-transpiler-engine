@@ -73,7 +73,8 @@ jobs:
         run: |
           set -o pipefail
 
-          CHECKPOINT_SHA=$(git rev-parse HEAD)
+          INITIAL_SHA=$(git rev-parse HEAD)
+          CHECKPOINT_SHA="$INITIAL_SHA"
 
           EXTRA_CONTEXT=""
           if [ "$PRIOR_ATTEMPT" == "true" ]; then
@@ -87,8 +88,6 @@ jobs:
               PR_FILES+=("$f")
             fi
           done < <(git diff --name-only main...HEAD -- src/ tests/)
-
-          PROMPT="IMPORTANT: The files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts) are strictly REFERENCE DOCUMENTS—do NOT edit them unless explicitly requested below. Edit ONLY the PR target files already loaded in chat (${PR_FILES[*]}) to apply these fixes: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Preserve .js extensions on relative imports and update tests if needed. Do not waste turns searching the repository—apply the fixes immediately and loop until npm run build and npm run test pass."
 
           READ_FLAGS=()
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
@@ -154,17 +153,23 @@ jobs:
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
 
+            RESUME_NOTE=""
+            if [ "$CHECKPOINT_SHA" != "$INITIAL_SHA" ]; then
+              RESUME_NOTE="PROGRESS CHECKPOINT LOADED: A previous model already applied partial fixes that compile cleanly. Inspect the current files in chat and finish any remaining fix items or failing Vitest tests without undoing valid fixes."
+            fi
+
+            PROMPT="IMPORTANT: The files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts) are strictly REFERENCE DOCUMENTS—do NOT edit them unless explicitly requested below. $RESUME_NOTE Edit ONLY the PR target files already loaded in chat (${PR_FILES[*]}) to apply these fixes: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
+
             echo "=================================================="
-            echo "Attempting Aider [$PROVIDER] -> $MODEL"
+            echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
             echo "=================================================="
 
-            aider \
+            timeout 6m aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
               --no-detect-urls \
               --no-show-model-warnings \
-              --no-stream \
               --yes \
               --auto-commits \
               "${READ_FLAGS[@]}" \
@@ -188,9 +193,41 @@ jobs:
               break
             fi
 
-            echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
-            git reset --hard "$CHECKPOINT_SHA" >/dev/null
-            git clean -f >/dev/null
+            SAVED_TIER2=false
+            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ]; then
+              for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
+                git reset --hard "$COMMIT" >/dev/null
+                git clean -f >/dev/null
+                if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
+                  echo "::notice::[$PROVIDER] $MODEL salvaged full passing checkpoint ($COMMIT)!"
+                  CHECKPOINT_SHA="$COMMIT"
+                  SAVED_TIER2=true
+                  SUCCESS=true
+                  break
+                fi
+              done
+
+              if [ "$SUCCESS" == "true" ]; then
+                break
+              fi
+
+              for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
+                git reset --hard "$COMMIT" >/dev/null
+                git clean -f >/dev/null
+                if npm run build >/dev/null 2>&1; then
+                  echo "::notice::[$PROVIDER] $MODEL saved TypeScript-compiling checkpoint (${COMMIT:0:7}) for next model to finish tests!"
+                  CHECKPOINT_SHA="$COMMIT"
+                  SAVED_TIER2=true
+                  break
+                fi
+              done
+            fi
+
+            if [ "$SAVED_TIER2" != "true" ]; then
+              echo "::warning::[$PROVIDER] $MODEL failed, timed out, or left broken TypeScript. Rolling back to ${CHECKPOINT_SHA:0:7}..."
+              git reset --hard "$CHECKPOINT_SHA" >/dev/null
+              git clean -f >/dev/null
+            fi
             sleep 3
           done
 
