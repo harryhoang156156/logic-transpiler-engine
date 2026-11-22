@@ -134,13 +134,12 @@ jobs:
             echo "Attempting Aider [$PROVIDER] -> $MODEL"
             echo "=================================================="
 
-            aider \
+            timeout 5m aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
               --no-detect-urls \
               --no-show-model-warnings \
-              --no-stream \
               --yes \
               --auto-commits \
               "${READ_FLAGS[@]}" \
