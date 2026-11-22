@@ -78,16 +78,40 @@ function findNodeByName(node: ASTNode, name: string): string | null {
 }
 
 function runCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const proc = spawn('npx', ['tsx', 'src/main.ts', ...args], {
       cwd: process.cwd(),
+      // Create a new process group so we can kill the entire tree on timeout
+      detached: true,
     });
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (d) => (stdout += d.toString()));
     proc.stderr.on('data', (d) => (stderr += d.toString()));
+
+    // Subprocess deadline: 10 seconds (shorter than the 15s test timeout)
+    const timeoutMs = 10000;
+    const timeoutId = setTimeout(() => {
+      // Kill the entire process group (negative pid kills the group on Unix)
+      try {
+        if (proc.pid !== undefined) {
+          process.kill(-proc.pid, 'SIGKILL');
+        }
+      } catch {
+        // Fallback: kill just the direct child if process group kill fails (e.g., Windows)
+        proc.kill('SIGKILL');
+      }
+      reject(new Error(`CLI subprocess timed out after ${timeoutMs}ms. Stdout: ${stdout}\nStderr: ${stderr}`));
+    }, timeoutMs);
+
     proc.on('close', (code) => {
+      clearTimeout(timeoutId);
       resolve({ code, stdout, stderr });
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeoutId);
+      reject(err);
     });
   });
 }
