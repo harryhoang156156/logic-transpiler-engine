@@ -64,8 +64,8 @@ jobs:
           set -o pipefail
 
           CHECKPOINT_SHA=$(git rev-parse HEAD)
-                    PROMPT="IMPORTANT: All files currently loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. Read $SPEC_FILE to find the exact target file paths, then immediately CREATE the new TypeScript implementation file in src/ and its new Vitest test file in tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js'). Do not waste turns debating or exploring—create both target files right away and loop until npm run build and npm run test pass."
 
+          shopt -s globstar nullglob
           READ_FLAGS=(--read "$SPEC_FILE")
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
             READ_FLAGS+=(--read "$OVERVIEW_FILE")
@@ -73,9 +73,24 @@ jobs:
           if [ -f "dependencies_and_connections.md" ]; then
             READ_FLAGS+=(--read "dependencies_and_connections.md")
           fi
-          if [ -f "src/schemas.ts" ]; then
-            READ_FLAGS+=(--read "src/schemas.ts")
+
+          EDIT_FILES=()
+          if [[ "$SPEC_FILE" == *integration* ]]; then
+            # Integration mode: load existing src/ files so Aider wires them together and writes tests/integration.test.ts
+            for existing_src in src/**/*.ts; do
+              if [ -f "$existing_src" ]; then
+                EDIT_FILES+=("$existing_src")
+              fi
+            done
+            PROMPT="IMPORTANT: $SPEC_FILE, $OVERVIEW_FILE, and dependencies_and_connections.md are strictly READ-ONLY reference documents—do NOT edit them. All existing src/ modules are already loaded in chat. Follow $SPEC_FILE to wire the components together end-to-end (updating src/main.ts or other src/ files only if needed for integration) and CREATE the end-to-end integration test suite in tests/integration.test.ts (importing from 'vitest', using .js extensions on relative imports). Do not waste turns debating—implement the integration tests and any missing wiring immediately, and loop until npm run build and npm run test pass."
+          else
+            # Standard single-component TDD mode
+            if [ -f "src/schemas.ts" ]; then
+              READ_FLAGS+=(--read "src/schemas.ts")
+            fi
+            PROMPT="IMPORTANT: All files currently loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. Read $SPEC_FILE to find the exact target file paths, then immediately CREATE the new TypeScript implementation file in src/ and its new Vitest test file in tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js'). Do not waste turns debating or exploring—create both target files right away and loop until npm run build and npm run test pass."
           fi
+          shopt -u globstar nullglob
 
           CANDIDATES=(
             "google|gemini/gemini-3.8-flash"
@@ -134,7 +149,7 @@ jobs:
             echo "Attempting Aider [$PROVIDER] -> $MODEL"
             echo "=================================================="
 
-            timeout 5m aider \
+            timeout 6m aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
@@ -143,6 +158,7 @@ jobs:
               --yes \
               --auto-commits \
               "${READ_FLAGS[@]}" \
+              "${EDIT_FILES[@]}" \
               --test-cmd "npm run build && npm run test" \
               --auto-test \
               --message "$PROMPT" \
@@ -154,18 +170,35 @@ jobs:
             fi
             NEW_SHA=$(git rev-parse HEAD)
 
-            # If new code was committed AND both build + all tests pass, stop immediately!
+            # 1. Check if HEAD itself passes build + tests
             if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
                && npm run build >/dev/null 2>&1 \
                && npm run test >/dev/null 2>&1; then
-              echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL (480+ tests passing!)"
+              echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL"
               SUCCESS=true
               break
             fi
 
-            echo "::warning::[$PROVIDER] $MODEL failed, hit rate limits, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
-            git reset --hard "$CHECKPOINT_SHA" >/dev/null
-            git clean -f >/dev/null
+            # 2. If HEAD failed or timed out mid-tweak, salvage any earlier passing commit made by this model!
+            SALVAGED=false
+            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ]; then
+              for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
+                git reset --hard "$COMMIT" >/dev/null
+                git clean -f >/dev/null
+                if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
+                  echo "::notice::[$PROVIDER] $MODEL timed out/stopped mid-edit, salvaged passing checkpoint ($COMMIT)!"
+                  CHECKPOINT_SHA="$COMMIT"
+                  SALVAGED=true
+                  break
+                fi
+              done
+            fi
+
+            if [ "$SALVAGED" != "true" ]; then
+              echo "::warning::[$PROVIDER] $MODEL failed, timed out, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
+              git reset --hard "$CHECKPOINT_SHA" >/dev/null
+              git clean -f >/dev/null
+            fi
             sleep 3
           done
 
