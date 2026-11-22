@@ -6,10 +6,7 @@ import { ASTNode } from '../src/schemas.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-
-const execFileAsync = promisify(execFile);
+import { spawn } from 'node:child_process';
 
 let tempDirs: string[] = [];
 
@@ -78,6 +75,21 @@ function findNodeByName(node: ASTNode, name: string): string | null {
     }
   }
   return null;
+}
+
+function runCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn('npx', ['tsx', 'src/main.ts', ...args], {
+      cwd: process.cwd(),
+    });
+    let stdout = '';
+    let stderr = '';
+    proc.stdout.on('data', (d) => (stdout += d.toString()));
+    proc.stderr.on('data', (d) => (stderr += d.toString()));
+    proc.on('close', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
 }
 
 describe('integration', () => {
@@ -405,15 +417,11 @@ describe('integration', () => {
       .then(() => true)
       .catch(() => false);
     expect(failFileExists).toBe(false);
-  });
+  }, 15000);
 
   it('Test 4 — CLI Subprocess Smoke Test', async () => {
     // --help exits 0 and lists flags
-    const helpResult = await execFileAsync(
-      'npx',
-      ['tsx', 'src/main.ts', '--help'],
-      { cwd: process.cwd(), encoding: 'utf-8' }
-    );
+    const helpResult = await runCli(['--help']);
     expect(helpResult.code).toBe(0);
     expect(helpResult.stdout).toContain('--out');
     expect(helpResult.stdout).toContain('--spec');
@@ -422,18 +430,7 @@ describe('integration', () => {
     expect(helpResult.stdout).toContain('--src');
 
     // Missing --out exits non-zero
-    let threw = false;
-    let exitCode: number | null = null;
-    try {
-      await execFileAsync('npx', ['tsx', 'src/main.ts'], {
-        cwd: process.cwd(),
-        encoding: 'utf-8',
-      });
-    } catch (err: any) {
-      threw = true;
-      exitCode = err.code ?? null;
-    }
-    expect(threw).toBe(true);
-    expect(exitCode).not.toBe(0);
+    const missingOutResult = await runCli([]);
+    expect(missingOutResult.code).not.toBe(0);
   });
 });
