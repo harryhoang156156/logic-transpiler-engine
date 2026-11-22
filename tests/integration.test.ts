@@ -104,7 +104,9 @@ function runCli(
       } catch {
         proc.kill('SIGKILL');
       }
-      reject(new Error(`CLI subprocess timed out after ${timeoutMs}ms. Stdout: ${stdout}\nStderr: ${stderr}`));
+      const error = new Error(`CLI subprocess timed out after ${timeoutMs}ms. Stdout: ${stdout}\nStderr: ${stderr}`);
+      (error as any).pid = proc.pid;
+      reject(error);
     }, timeoutMs);
 
     proc.on('close', (code) => {
@@ -462,83 +464,87 @@ describe('integration', () => {
   }, 25000);
 
   it('Test 5 — Process Group Termination and Cleanup Verification', async () => {
-    // Use a Node one-liner that hangs indefinitely (setInterval never returns)
-    const hangCommand = 'node';
-    const hangArgs = ['-e', 'setInterval(() => {}, 1000)'];
-    const timeoutMs = 2000; // 2 seconds timeout for the test
+    const dir = await makeTempDir();
+    const scriptPath = path.join(dir, 'hang.js');
+    const childPidPath = path.join(dir, 'child.pid');
 
-    let proc: ReturnType<typeof spawn> | null = null;
-    let pid: number | null = null;
-    let killed = false;
+    // Write a script that spawns a child process (in the same process group) and writes its PID to a file.
+    const scriptContent = `
+      const { spawn } = require('child_process');
+      const fs = require('fs');
+      const path = require('path');
+      const child = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { detached: false });
+      fs.writeFileSync(path.join(__dirname, 'child.pid'), child.pid.toString());
+      setInterval(() => {}, 1000);
+    `;
+    await fs.writeFile(scriptPath, scriptContent);
+
+    // Use runCli with a short timeout to trigger the kill logic.
+    const timeoutMs = 2000;
+    let mainPid: number | null = null;
+    let childPid: number | null = null;
 
     try {
-      const resultPromise = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        proc = spawn(hangCommand, hangArgs, {
-          cwd: process.cwd(),
-          detached: true,
-        });
-        pid = proc.pid ?? null;
-        let stdout = '';
-        let stderr = '';
-        proc.stdout.on('data', (d) => (stdout += d.toString()));
-        proc.stderr.on('data', (d) => (stderr += d.toString()));
-
-        const timeoutId = setTimeout(() => {
-          killed = true;
-          try {
-            if (proc && proc.pid !== undefined) {
-              process.kill(-proc.pid, 'SIGKILL');
-            }
-          } catch {
-            if (proc) proc.kill('SIGKILL');
-          }
-          reject(new Error(`Subprocess timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-
-        proc.on('close', (code) => {
-          clearTimeout(timeoutId);
-          resolve({ code, stdout, stderr });
-        });
-
-        proc.on('error', (err) => {
-          clearTimeout(timeoutId);
-          reject(err);
-        });
+      await runCli([], {
+        command: 'node',
+        commandArgs: [scriptPath],
+        timeoutMs,
       });
-
-      // We expect the promise to reject due to timeout
-      await resultPromise;
+      // If we get here, the process exited before the timeout, which is a test failure.
+      throw new Error('Subprocess exited before timeout; expected timeout rejection');
     } catch (err) {
-      // Expected timeout error
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toContain('timed out');
-    } finally {
-      // Ensure cleanup: poll with signal-0 until process is gone
-      if (pid !== null) {
-        let exists = true;
-        while (exists) {
-          try {
-            process.kill(pid, 0); // signal 0 checks existence
-            // If no error, process still exists; wait a bit
-            await new Promise((r) => setTimeout(r, 50));
-          } catch {
-            exists = false;
-          }
-        }
-      }
-      // If for some reason the process wasn't killed, force kill
-      if (proc && !killed) {
-        try {
-          if (proc.pid !== undefined) {
-            process.kill(-proc.pid, 'SIGKILL');
-          }
-        } catch {
-          proc.kill('SIGKILL');
-        }
-      }
+      // Extract the main PID from the error (attached by runCli)
+      mainPid = (err as any).pid ?? null;
+      expect(mainPid).not.toBeNull();
     }
 
-    // If we reach here, the process has been terminated and cleaned up.
-    // The test passes if no uncaught exception occurs.
+    // Read the child PID from the file written by the script.
+    try {
+      const childPidStr = await fs.readFile(childPidPath, 'utf-8');
+      childPid = parseInt(childPidStr.trim(), 10);
+      expect(childPid).not.toBeNaN();
+    } catch {
+      throw new Error('Failed to read child PID file');
+    }
+
+    // Verify both the main process and the child process are gone.
+    // Poll with signal 0 until both return ESRCH (process does not exist).
+    const deadline = Date.now() + 5000; // 5 seconds max wait
+    let mainGone = false;
+    let childGone = false;
+
+    while (Date.now() < deadline) {
+      if (!mainGone && mainPid !== null) {
+        try {
+          process.kill(mainPid, 0);
+        } catch (e: any) {
+          if (e.code === 'ESRCH') {
+            mainGone = true;
+          } else {
+            throw new Error(`Unexpected error probing main PID ${mainPid}: ${e.message}`);
+          }
+        }
+      }
+      if (!childGone && childPid !== null) {
+        try {
+          process.kill(childPid, 0);
+        } catch (e: any) {
+          if (e.code === 'ESRCH') {
+            childGone = true;
+          } else {
+            throw new Error(`Unexpected error probing child PID ${childPid}: ${e.message}`);
+          }
+        }
+      }
+      if (mainGone && childGone) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
+    expect(mainGone).toBe(true);
+    expect(childGone).toBe(true);
   }, 10000);
 });
