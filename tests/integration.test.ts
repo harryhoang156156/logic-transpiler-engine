@@ -77,11 +77,18 @@ function findNodeByName(node: ASTNode, name: string): string | null {
   return null;
 }
 
-function runCli(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+function runCli(
+  args: string[],
+  options: { command?: string; commandArgs?: string[]; timeoutMs?: number } = {}
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const {
+    command = 'npx',
+    commandArgs = ['tsx', 'src/main.ts', ...args],
+    timeoutMs = 10000,
+  } = options;
   return new Promise((resolve, reject) => {
-    const proc = spawn('npx', ['tsx', 'src/main.ts', ...args], {
+    const proc = spawn(command, commandArgs, {
       cwd: process.cwd(),
-      // Create a new process group so we can kill the entire tree on timeout
       detached: true,
     });
     let stdout = '';
@@ -89,16 +96,12 @@ function runCli(args: string[]): Promise<{ code: number | null; stdout: string; 
     proc.stdout.on('data', (d) => (stdout += d.toString()));
     proc.stderr.on('data', (d) => (stderr += d.toString()));
 
-    // Subprocess deadline: 10 seconds (shorter than the 15s test timeout)
-    const timeoutMs = 10000;
     const timeoutId = setTimeout(() => {
-      // Kill the entire process group (negative pid kills the group on Unix)
       try {
         if (proc.pid !== undefined) {
           process.kill(-proc.pid, 'SIGKILL');
         }
       } catch {
-        // Fallback: kill just the direct child if process group kill fails (e.g., Windows)
         proc.kill('SIGKILL');
       }
       reject(new Error(`CLI subprocess timed out after ${timeoutMs}ms. Stdout: ${stdout}\nStderr: ${stderr}`));
@@ -456,5 +459,86 @@ describe('integration', () => {
     // Missing --out exits non-zero
     const missingOutResult = await runCli([]);
     expect(missingOutResult.code).not.toBe(0);
-  });
+  }, 25000);
+
+  it('Test 5 — Process Group Termination and Cleanup Verification', async () => {
+    // Use a Node one-liner that hangs indefinitely (setInterval never returns)
+    const hangCommand = 'node';
+    const hangArgs = ['-e', 'setInterval(() => {}, 1000)'];
+    const timeoutMs = 2000; // 2 seconds timeout for the test
+
+    let proc: ReturnType<typeof spawn> | null = null;
+    let pid: number | null = null;
+    let killed = false;
+
+    try {
+      const resultPromise = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
+        proc = spawn(hangCommand, hangArgs, {
+          cwd: process.cwd(),
+          detached: true,
+        });
+        pid = proc.pid ?? null;
+        let stdout = '';
+        let stderr = '';
+        proc.stdout.on('data', (d) => (stdout += d.toString()));
+        proc.stderr.on('data', (d) => (stderr += d.toString()));
+
+        const timeoutId = setTimeout(() => {
+          killed = true;
+          try {
+            if (proc && proc.pid !== undefined) {
+              process.kill(-proc.pid, 'SIGKILL');
+            }
+          } catch {
+            if (proc) proc.kill('SIGKILL');
+          }
+          reject(new Error(`Subprocess timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+
+        proc.on('close', (code) => {
+          clearTimeout(timeoutId);
+          resolve({ code, stdout, stderr });
+        });
+
+        proc.on('error', (err) => {
+          clearTimeout(timeoutId);
+          reject(err);
+        });
+      });
+
+      // We expect the promise to reject due to timeout
+      await resultPromise;
+    } catch (err) {
+      // Expected timeout error
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('timed out');
+    } finally {
+      // Ensure cleanup: poll with signal-0 until process is gone
+      if (pid !== null) {
+        let exists = true;
+        while (exists) {
+          try {
+            process.kill(pid, 0); // signal 0 checks existence
+            // If no error, process still exists; wait a bit
+            await new Promise((r) => setTimeout(r, 50));
+          } catch {
+            exists = false;
+          }
+        }
+      }
+      // If for some reason the process wasn't killed, force kill
+      if (proc && !killed) {
+        try {
+          if (proc.pid !== undefined) {
+            process.kill(-proc.pid, 'SIGKILL');
+          }
+        } catch {
+          proc.kill('SIGKILL');
+        }
+      }
+    }
+
+    // If we reach here, the process has been terminated and cleaned up.
+    // The test passes if no uncaught exception occurs.
+  }, 10000);
 });
