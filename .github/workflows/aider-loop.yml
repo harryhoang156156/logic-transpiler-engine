@@ -63,32 +63,19 @@ jobs:
         run: |
           set -o pipefail
 
-          CHECKPOINT_SHA=$(git rev-parse HEAD)
+          INITIAL_SHA=$(git rev-parse HEAD)
+          CHECKPOINT_SHA="$INITIAL_SHA"
 
           shopt -s globstar nullglob
-          READ_FLAGS=(--read "$SPEC_FILE")
+          BASE_READ_FLAGS=(--read "$SPEC_FILE")
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
-            READ_FLAGS+=(--read "$OVERVIEW_FILE")
+            BASE_READ_FLAGS+=(--read "$OVERVIEW_FILE")
           fi
           if [ -f "dependencies_and_connections.md" ]; then
-            READ_FLAGS+=(--read "dependencies_and_connections.md")
+            BASE_READ_FLAGS+=(--read "dependencies_and_connections.md")
           fi
-
-          EDIT_FILES=()
-          if [[ "$SPEC_FILE" == *integration* ]]; then
-            # Integration mode: load existing src/ files so Aider wires them together and writes tests/integration.test.ts
-            for existing_src in src/**/*.ts; do
-              if [ -f "$existing_src" ]; then
-                EDIT_FILES+=("$existing_src")
-              fi
-            done
-            PROMPT="IMPORTANT: $SPEC_FILE, $OVERVIEW_FILE, and dependencies_and_connections.md are strictly READ-ONLY reference documents—do NOT edit them. All existing src/ modules are already loaded in chat. Follow $SPEC_FILE to wire the components together end-to-end (updating src/main.ts or other src/ files only if needed for integration) and CREATE the end-to-end integration test suite in tests/integration.test.ts (importing from 'vitest', using .js extensions on relative imports). Do not waste turns debating—implement the integration tests and any missing wiring immediately, and loop until npm run build and npm run test pass."
-          else
-            # Standard single-component TDD mode
-            if [ -f "src/schemas.ts" ]; then
-              READ_FLAGS+=(--read "src/schemas.ts")
-            fi
-            PROMPT="IMPORTANT: All files currently loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. Read $SPEC_FILE to find the exact target file paths, then immediately CREATE the new TypeScript implementation file in src/ and its new Vitest test file in tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js'). Do not waste turns debating or exploring—create both target files right away and loop until npm run build and npm run test pass."
+          if [[ "$SPEC_FILE" != *integration* ]] && [ -f "src/schemas.ts" ]; then
+            BASE_READ_FLAGS+=(--read "src/schemas.ts")
           fi
           shopt -u globstar nullglob
 
@@ -145,8 +132,38 @@ jobs:
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
 
+            # Dynamically gather editable files (existing src/ for integration + any checkpointed files already created)
+            shopt -s globstar nullglob
+            EDIT_FILES=()
+            if [[ "$SPEC_FILE" == *integration* ]]; then
+              for existing_src in src/**/*.ts; do
+                [ -f "$existing_src" ] && EDIT_FILES+=("$existing_src")
+              done
+            fi
+            CHECKPOINT_FILES=()
+            if [ "$CHECKPOINT_SHA" != "$INITIAL_SHA" ]; then
+              while IFS= read -r cf; do
+                if [ -n "$cf" ] && [ -f "$cf" ]; then
+                  CHECKPOINT_FILES+=("$cf")
+                  EDIT_FILES+=("$cf")
+                fi
+              done < <(git diff --name-only "$INITIAL_SHA" "$CHECKPOINT_SHA" -- src/ tests/)
+            fi
+            shopt -u globstar nullglob
+
+            RESUME_NOTE=""
+            if [ ${#CHECKPOINT_FILES[@]} -gt 0 ]; then
+              RESUME_NOTE="PROGRESS CHECKPOINT LOADED: A previous model already created and compiled these files (${CHECKPOINT_FILES[*]}). DO NOT rewrite them from scratch—inspect them in chat and finish any remaining code or failing Vitest tests."
+            fi
+
+            if [[ "$SPEC_FILE" == *integration* ]]; then
+              PROMPT="IMPORTANT: $SPEC_FILE, $OVERVIEW_FILE, and dependencies_and_connections.md are strictly READ-ONLY reference documents—do NOT edit them. $RESUME_NOTE Follow $SPEC_FILE to wire the components together end-to-end (updating src/main.ts or other src/ files only if needed) and ensure tests/integration.test.ts passes completely (importing from 'vitest', using .js extensions on relative imports). Loop until npm run build and npm run test pass."
+            else
+              PROMPT="IMPORTANT: All files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. $RESUME_NOTE Read $SPEC_FILE to find the exact target file paths in src/ and tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js'). Loop until npm run build and npm run test pass."
+            fi
+
             echo "=================================================="
-            echo "Attempting Aider [$PROVIDER] -> $MODEL"
+            echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
             echo "=================================================="
 
             timeout 6m aider \
@@ -157,7 +174,7 @@ jobs:
               --no-show-model-warnings \
               --yes \
               --auto-commits \
-              "${READ_FLAGS[@]}" \
+              "${BASE_READ_FLAGS[@]}" \
               "${EDIT_FILES[@]}" \
               --test-cmd "npm run build && npm run test" \
               --auto-test \
@@ -170,7 +187,7 @@ jobs:
             fi
             NEW_SHA=$(git rev-parse HEAD)
 
-            # 1. Check if HEAD itself passes build + tests
+            # Tier 1: Full Pass (Build + All Tests Green) -> Exit immediately!
             if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
                && npm run build >/dev/null 2>&1 \
                && npm run test >/dev/null 2>&1; then
@@ -179,23 +196,39 @@ jobs:
               break
             fi
 
-            # 2. If HEAD failed or timed out mid-tweak, salvage any earlier passing commit made by this model!
-            SALVAGED=false
+            # Tier 2: Salvage any commit made by this model (prefer full build+test pass, fallback to clean TypeScript build)
+            SAVED_TIER2=false
             if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ]; then
               for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
                 git reset --hard "$COMMIT" >/dev/null
                 git clean -f >/dev/null
                 if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
-                  echo "::notice::[$PROVIDER] $MODEL timed out/stopped mid-edit, salvaged passing checkpoint ($COMMIT)!"
+                  echo "::notice::[$PROVIDER] $MODEL salvaged full passing checkpoint ($COMMIT)!"
                   CHECKPOINT_SHA="$COMMIT"
-                  SALVAGED=true
+                  SAVED_TIER2=true
+                  SUCCESS=true
+                  break
+                fi
+              done
+
+              if [ "$SUCCESS" == "true" ]; then
+                break
+              fi
+
+              for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
+                git reset --hard "$COMMIT" >/dev/null
+                git clean -f >/dev/null
+                if npm run build >/dev/null 2>&1; then
+                  echo "::notice::[$PROVIDER] $MODEL saved TypeScript-compiling checkpoint (${COMMIT:0:7}) for next model to finish tests!"
+                  CHECKPOINT_SHA="$COMMIT"
+                  SAVED_TIER2=true
                   break
                 fi
               done
             fi
 
-            if [ "$SALVAGED" != "true" ]; then
-              echo "::warning::[$PROVIDER] $MODEL failed, timed out, or left incomplete code. Rolling back to $CHECKPOINT_SHA..."
+            if [ "$SAVED_TIER2" != "true" ]; then
+              echo "::warning::[$PROVIDER] $MODEL failed, timed out, or left broken TypeScript. Rolling back to ${CHECKPOINT_SHA:0:7}..."
               git reset --hard "$CHECKPOINT_SHA" >/dev/null
               git clean -f >/dev/null
             fi
