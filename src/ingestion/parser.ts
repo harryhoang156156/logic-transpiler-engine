@@ -121,7 +121,6 @@ function parseIfStatement(node: ts.IfStatement, sourceFile: ts.SourceFile): ASTN
         }
       }
     } else if (ts.isIfStatement(node.elseStatement)) {
-      // Handle else if chains
       const parsed = parseIfStatement(node.elseStatement, sourceFile);
       falseBranch.push(parsed);
     } else {
@@ -181,11 +180,6 @@ function parseLoopStatement(node: ts.ForOfStatement | ts.WhileStatement, sourceF
 
 function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode {
   let codeSnippet = node.getText(sourceFile);
-
-  // Strip trailing semicolons so ts_emitter.ts can re-apply them cleanly.
-  // Exception: loops with an empty statement body (e.g. `for await (const x of y);`)
-  // use the trailing semicolon as the loop body itself, so it must be preserved.
-  // Ordinary expression semicolon trimming remains unchanged.
   const isLoopWithEmptyBody =
     (ts.isForStatement(node) ||
       ts.isForInStatement(node) ||
@@ -205,62 +199,35 @@ function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile): AS
 }
 
 function parseStatement(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode | null {
-  // Skip import declarations
   if (ts.isImportDeclaration(node)) {
     return null;
   }
 
-  // Function declarations
   if (ts.isFunctionDeclaration(node)) {
-    // AsyncFunctionBlock cannot represent type parameters or parameter
-    // modifiers (defaults, optional, rest), so preserve those declarations
-    // verbatim as ExpressionBlock nodes.
     if ((node.typeParameters && node.typeParameters.length > 0) || hasUnsupportedParameterSyntax(node)) {
       return parseExpressionBlock(node, sourceFile);
     }
     return parseFunctionDeclaration(node, sourceFile);
   }
 
-  // Try statements
   if (ts.isTryStatement(node)) {
-    // TryCatchGuardian has no representation for finally blocks, so preserve
-    // try/finally statements verbatim as ExpressionBlock nodes.
     if (node.finallyBlock) {
       return parseExpressionBlock(node, sourceFile);
     }
     return parseTryStatement(node, sourceFile);
   }
 
-  // If statements
   if (ts.isIfStatement(node)) {
     return parseIfStatement(node, sourceFile);
   }
 
-  // Loop statements
   if (ts.isForOfStatement(node) || ts.isWhileStatement(node)) {
-    // LoopInterval has no representation for asynchronous iteration, so
-    // preserve for-await-of loops verbatim as ExpressionBlock nodes.
     if (ts.isForOfStatement(node) && node.awaitModifier) {
       return parseExpressionBlock(node, sourceFile);
     }
     return parseLoopStatement(node, sourceFile);
   }
 
-  // Variable declarations, expression statements, return statements, etc.
-  // Fall back to ExpressionBlock
-  if (
-    ts.isVariableStatement(node) ||
-    ts.isExpressionStatement(node) ||
-    ts.isReturnStatement(node) ||
-    ts.isBreakStatement(node) ||
-    ts.isContinueStatement(node) ||
-    ts.isThrowStatement(node) ||
-    ts.isDebuggerStatement(node)
-  ) {
-    return parseExpressionBlock(node, sourceFile);
-  }
-
-  // For any other statement types, fall back to ExpressionBlock
   return parseExpressionBlock(node, sourceFile);
 }
 
@@ -291,7 +258,6 @@ export function parseTypeScriptCode(sourceCode: string, moduleName?: string): AS
     children,
   };
 
-  // Validate against schema
   return ASTNodeSchema.parse(moduleContainer);
 }
 

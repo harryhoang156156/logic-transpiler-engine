@@ -33,6 +33,26 @@ function collectNodeIds(node: ASTNode, ids: Set<string>): void {
   }
 }
 
+function findNodePath(node: ASTNode, targetId: string, path: ASTNode[] = []): ASTNode[] | null {
+  if (node.id === targetId) {
+    return [...path, node];
+  }
+  for (const key of CHILD_ARRAY_KEYS) {
+    if (key in node) {
+      const children = (node as any)[key];
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (child && typeof child === 'object') {
+            const res = findNodePath(child as ASTNode, targetId, [...path, node]);
+            if (res) return res;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function replaceNodeInTree(
   currentNode: ASTNode,
   targetId: string,
@@ -40,12 +60,12 @@ function replaceNodeInTree(
 ): boolean {
   for (const key of CHILD_ARRAY_KEYS) {
     if (key in currentNode) {
-      const children = (currentNode as any)[key];
-      if (Array.isArray(children)) {
-        for (let i = 0; i < children.length; i++) {
-          const child = children[i];
+      const childrenArr = (currentNode as any)[key];
+      if (Array.isArray(childrenArr)) {
+        for (let i = 0; i < childrenArr.length; i++) {
+          const child = childrenArr[i];
           if (child && child.id === targetId) {
-            children[i] = replacementNode;
+            childrenArr[i] = replacementNode;
             return true;
           }
           if (child && typeof child === 'object') {
@@ -65,17 +85,18 @@ export function applyAtomicPatches(
   rootAst: ASTNode,
   operations: AtomicPatchOperation[]
 ): ASTNode {
-  // Deep clone to ensure atomic transaction isolation
-  let clonedAst: ASTNode = structuredClone(rootAst);
-
   // Validate all new nodes up front
   for (const op of operations) {
     ASTNodeSchema.parse(op.newNode);
   }
 
-  // Check preconditions before modifying
+  // Check preconditions before modifying anything (deep clone happens only after checks, or we operate on a clone)
+  let clonedAst: ASTNode = structuredClone(rootAst);
+
   const existingIds = new Set<string>();
   collectNodeIds(clonedAst, existingIds);
+
+  const seenTargets = new Set<string>();
 
   for (const op of operations) {
     if (op.action === 'REPLACE') {
@@ -85,13 +106,29 @@ export function applyAtomicPatches(
       if (!existingIds.has(op.targetNodeId)) {
         throw new Error(`Target node id "${op.targetNodeId}" not found in AST.`);
       }
+      if (seenTargets.has(op.targetNodeId)) {
+        throw new Error(`Duplicate replacement target node id "${op.targetNodeId}" found.`);
+      }
+      seenTargets.add(op.targetNodeId);
     } else if (op.action !== 'APPEND_TO_MODULE') {
       throw new Error(`Unknown action: "${(op as any).action}".`);
     }
   }
 
+  // Sort operations by depth descending to handle nested replacements properly
+  const sortedOperations = [...operations].sort((a, b) => {
+    if (a.action === 'REPLACE' && b.action === 'REPLACE' && a.targetNodeId && b.targetNodeId) {
+      const pathA = findNodePath(clonedAst, a.targetNodeId);
+      const pathB = findNodePath(clonedAst, b.targetNodeId);
+      if (pathA && pathB) {
+        return pathB.length - pathA.length;
+      }
+    }
+    return 0;
+  });
+
   // Apply operations
-  for (const op of operations) {
+  for (const op of sortedOperations) {
     const clonedNewNode = structuredClone(op.newNode);
     if (op.action === 'REPLACE') {
       const targetId = op.targetNodeId!;
@@ -101,7 +138,7 @@ export function applyAtomicPatches(
       }
       const replaced = replaceNodeInTree(clonedAst, targetId, clonedNewNode);
       if (!replaced) {
-        throw new Error(`Failed to replace node with id "${targetId}".`);
+        throw new Error(`Target node id "${targetId}" not found in AST during replacement.`);
       }
     } else if (op.action === 'APPEND_TO_MODULE') {
       if (clonedAst.type !== 'ModuleContainer') {
