@@ -58,7 +58,7 @@ jobs:
           npm install
           pip install -q aider-chat
 
-      - name: Run Aider Fix Loop (Fast Multi-Key Cascade)
+      - name: Run Aider Fix Loop (Idle-Guarded Multi-Key Cascade)
         env:
           GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OR_KEY_1: ${{ secrets.OPENROUTER_API_KEY }}
@@ -76,7 +76,6 @@ jobs:
           INITIAL_SHA=$(git rev-parse HEAD)
           CHECKPOINT_SHA="$INITIAL_SHA"
 
-          # Only load files explicitly mentioned in FIX_INSTRUCTIONS so we don't bloat context with untouched audit files
           TARGET_FILES=()
           shopt -s globstar nullglob
           for f in src/**/*.ts tests/**/*.ts; do
@@ -86,7 +85,6 @@ jobs:
           done
           shopt -u globstar nullglob
 
-          # Fallback to PR diff only if no specific file paths were named in instructions
           if [ ${#TARGET_FILES[@]} -eq 0 ]; then
             while IFS= read -r f; do
               [ -n "$f" ] && [ -f "$f" ] && TARGET_FILES+=("$f")
@@ -97,7 +95,6 @@ jobs:
           [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ] && READ_FLAGS+=(--read "$OVERVIEW_FILE")
           [ -f "dependencies_and_connections.md" ] && READ_FLAGS+=(--read "dependencies_and_connections.md")
 
-          # Lean 6-entry cascade (best model per key) -> max ~24 mins worst-case instead of 1+ hour
           CANDIDATES=(
             "google|gemini/gemini-3.8-flash"
             "openrouter1|openrouter/particle-ai/particle-1:free"
@@ -106,6 +103,31 @@ jobs:
             "google|gemini/gemini-3.5-flash-lite"
             "kilo|openai/kilo-auto/free"
           )
+
+          run_with_idle_timeout() {
+            local idle_limit=300
+            "$@" > /tmp/aider_raw.log 2>&1 &
+            local pid=$!
+            local last_size=0
+            local idle_secs=0
+            while kill -0 "$pid" 2>/dev/null; do
+              sleep 5
+              local cur_size=$(wc -c < /tmp/aider_raw.log 2>/dev/null || echo 0)
+              if [ "$cur_size" -gt "$last_size" ]; then
+                last_size=$cur_size
+                idle_secs=0
+              else
+                idle_secs=$((idle_secs + 5))
+                if [ "$idle_secs" -ge "$idle_limit" ]; then
+                  echo "::warning::Aider stalled with no output for ${idle_limit}s. Killing stalled process..."
+                  kill -9 "$pid" 2>/dev/null || true
+                  break
+                fi
+              fi
+            done
+            wait "$pid" 2>/dev/null || true
+            sed -e '/<!DOCTYPE/I,/<\/html>/Id' -e '/<html/I,/<\/html>/Id' /tmp/aider_raw.log
+          }
 
           SUCCESS=false
           for ENTRY in "${CANDIDATES[@]}"; do
@@ -147,7 +169,7 @@ jobs:
             echo "Attempting Aider [$PROVIDER] -> $MODEL (Files: ${TARGET_FILES[*]})"
             echo "=================================================="
 
-            timeout 4m aider \
+            run_with_idle_timeout aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
@@ -160,8 +182,7 @@ jobs:
               "${TARGET_FILES[@]}" \
               --test-cmd "npm run build && npm run test" \
               --auto-test \
-              --message "$PROMPT" \
-              2>&1 | tee /tmp/aider.log | grep -viE "<(!DOCTYPE|html|head|body|script|style|svg|path|div|span|meta|link)" || true
+              --message "$PROMPT" || true
 
             HAS_CHANGES=false
             if [ "$(git rev-parse HEAD)" != "$CHECKPOINT_SHA" ] || ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
@@ -184,7 +205,7 @@ jobs:
                 git clean -f >/dev/null
               fi
             else
-              echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or timed out)."
+              echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or stalled)."
             fi
             sleep 2
           done
