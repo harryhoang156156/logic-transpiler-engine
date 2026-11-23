@@ -265,3 +265,4 @@ export async function parseTypeScriptFile(filePath: string): Promise<ASTNode> {
   const sourceCode = await fs.readFile(filePath, 'utf-8');
   return parseTypeScriptCode(sourceCode, filePath);
 }
+
