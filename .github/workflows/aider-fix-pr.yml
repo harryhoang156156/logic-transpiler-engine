@@ -58,7 +58,7 @@ jobs:
           npm install
           pip install -q aider-chat
 
-      - name: Run Aider Fix Loop (Google -> 3x OpenRouter -> Kilo)
+      - name: Run Aider Fix Loop (Fast Multi-Key Cascade)
         env:
           GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OR_KEY_1: ${{ secrets.OPENROUTER_API_KEY }}
@@ -76,46 +76,34 @@ jobs:
           INITIAL_SHA=$(git rev-parse HEAD)
           CHECKPOINT_SHA="$INITIAL_SHA"
 
-          EXTRA_CONTEXT=""
-          if [ "$PRIOR_ATTEMPT" == "true" ]; then
-            LAST_DIFF=$(git log -n 1 -p -- src/ tests/)
-            EXTRA_CONTEXT=$(printf "NOTE: Another automated review agent already pushed a tentative fix commit to this branch. Here is the diff of that recent commit:\n%s\n\nAudit those changes carefully against the review feedback and %s. Keep what is valid, fix anything incomplete or broken, or rewrite it cleanly if needed." "$LAST_DIFF" "$OVERVIEW_FILE")
-          fi
-
-          PR_FILES=()
-          while IFS= read -r f; do
-            if [ -n "$f" ] && [ -f "$f" ]; then
-              PR_FILES+=("$f")
+          # Only load files explicitly mentioned in FIX_INSTRUCTIONS so we don't bloat context with untouched audit files
+          TARGET_FILES=()
+          shopt -s globstar nullglob
+          for f in src/**/*.ts tests/**/*.ts; do
+            if [ -f "$f" ] && echo "$FIX_INSTRUCTIONS" | grep -qF "$f"; then
+              TARGET_FILES+=("$f")
             fi
-          done < <(git diff --name-only main...HEAD -- src/ tests/)
+          done
+          shopt -u globstar nullglob
+
+          # Fallback to PR diff only if no specific file paths were named in instructions
+          if [ ${#TARGET_FILES[@]} -eq 0 ]; then
+            while IFS= read -r f; do
+              [ -n "$f" ] && [ -f "$f" ] && TARGET_FILES+=("$f")
+            done < <(git diff --name-only main...HEAD -- src/ tests/)
+          fi
 
           READ_FLAGS=()
-          if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
-            READ_FLAGS+=(--read "$OVERVIEW_FILE")
-          fi
-          if [ -f "dependencies_and_connections.md" ]; then
-            READ_FLAGS+=(--read "dependencies_and_connections.md")
-          fi
-          if [ -f "src/schemas.ts" ]; then
-            READ_FLAGS+=(--read "src/schemas.ts")
-          fi
+          [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ] && READ_FLAGS+=(--read "$OVERVIEW_FILE")
+          [ -f "dependencies_and_connections.md" ] && READ_FLAGS+=(--read "dependencies_and_connections.md")
 
+          # Lean 6-entry cascade (best model per key) -> max ~24 mins worst-case instead of 1+ hour
           CANDIDATES=(
             "google|gemini/gemini-3.8-flash"
-            "google|gemini/gemini-3.5-flash-lite"
-            "google|gemini/gemma-4-31b-it"
             "openrouter1|openrouter/particle-ai/particle-1:free"
-            "openrouter1|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter1|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter1|openrouter/baidu/ernie-5.5-flash-preview:free"
-            "openrouter2|openrouter/particle-ai/particle-1:free"
             "openrouter2|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter2|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter2|openrouter/baidu/ernie-5.5-flash-preview:free"
             "openrouter3|openrouter/particle-ai/particle-1:free"
-            "openrouter3|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter3|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter3|openrouter/baidu/ernie-5.5-flash-preview:free"
+            "google|gemini/gemini-3.5-flash-lite"
             "kilo|openai/kilo-auto/free"
           )
 
@@ -153,22 +141,23 @@ jobs:
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
 
-            PROMPT="IMPORTANT: The files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts) are strictly REFERENCE DOCUMENTS—do NOT edit them unless explicitly requested below. Edit ONLY the PR target files already loaded in chat (${PR_FILES[*]}) to apply these fixes: $FIX_INSTRUCTIONS. $EXTRA_CONTEXT Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
+            PROMPT="IMPORTANT: $OVERVIEW_FILE and dependencies_and_connections.md are READ-ONLY reference documents—do NOT edit them. Edit ONLY the target files loaded in chat (${TARGET_FILES[*]}) to apply these fixes: $FIX_INSTRUCTIONS. Preserve .js extensions on relative imports and update tests if needed. Loop until npm run build and npm run test pass."
 
             echo "=================================================="
-            echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
+            echo "Attempting Aider [$PROVIDER] -> $MODEL (Files: ${TARGET_FILES[*]})"
             echo "=================================================="
 
-            timeout 12m aider \
+            timeout 4m aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
+              --chat-history-file /tmp/aider-fix-history.md \
               --no-detect-urls \
               --no-show-model-warnings \
               --yes \
               --auto-commits \
               "${READ_FLAGS[@]}" \
-              "${PR_FILES[@]}" \
+              "${TARGET_FILES[@]}" \
               --test-cmd "npm run build && npm run test" \
               --auto-test \
               --message "$PROMPT" \
@@ -197,13 +186,13 @@ jobs:
             else
               echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or timed out)."
             fi
-            sleep 3
+            sleep 2
           done
 
           if [ "$SUCCESS" != "true" ]; then
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-            echo "::error::All provider keys hit rate limits or failed. Wait a few minutes and re-run."
+            echo "::error::All provider keys hit rate limits or failed. Wait for quota reset and re-run."
             exit 1
           fi
 
