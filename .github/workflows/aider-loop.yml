@@ -49,7 +49,7 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Run Aider Self-Healing Loop (Fast Multi-Key Cascade)
+      - name: Run Aider Self-Healing Loop (Idle-Guarded Multi-Key Cascade)
         env:
           GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OR_KEY_1: ${{ secrets.OPENROUTER_API_KEY }}
@@ -77,7 +77,6 @@ jobs:
             BASE_READ_FLAGS+=(--read "src/schemas.ts")
           fi
 
-          # Lean 6-entry cascade (best model per key) -> max ~30 mins worst-case instead of 1+ hour
           CANDIDATES=(
             "google|gemini/gemini-3.8-flash"
             "openrouter1|openrouter/particle-ai/particle-1:free"
@@ -86,6 +85,31 @@ jobs:
             "google|gemini/gemini-3.5-flash-lite"
             "kilo|openai/kilo-auto/free"
           )
+
+          run_with_idle_timeout() {
+            local idle_limit=300
+            "$@" > /tmp/aider_raw.log 2>&1 &
+            local pid=$!
+            local last_size=0
+            local idle_secs=0
+            while kill -0 "$pid" 2>/dev/null; do
+              sleep 5
+              local cur_size=$(wc -c < /tmp/aider_raw.log 2>/dev/null || echo 0)
+              if [ "$cur_size" -gt "$last_size" ]; then
+                last_size=$cur_size
+                idle_secs=0
+              else
+                idle_secs=$((idle_secs + 5))
+                if [ "$idle_secs" -ge "$idle_limit" ]; then
+                  echo "::warning::Aider stalled with no output for ${idle_limit}s. Killing stalled process..."
+                  kill -9 "$pid" 2>/dev/null || true
+                  break
+                fi
+              fi
+            done
+            wait "$pid" 2>/dev/null || true
+            sed -e '/<!DOCTYPE/I,/<\/html>/Id' -e '/<html/I,/<\/html>/Id' /tmp/aider_raw.log
+          }
 
           SUCCESS=false
           for ENTRY in "${CANDIDATES[@]}"; do
@@ -154,7 +178,7 @@ jobs:
             echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
             echo "=================================================="
 
-            timeout 5m aider \
+            run_with_idle_timeout aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
@@ -167,8 +191,7 @@ jobs:
               "${EDIT_FILES[@]}" \
               --test-cmd "npm run build && npm run test" \
               --auto-test \
-              --message "$PROMPT" \
-              2>&1 | tee /tmp/aider.log | grep -viE "<(!DOCTYPE|html|head|body|script|style|svg|path|div|span|meta|link)" || true
+              --message "$PROMPT" || true
 
             HAS_CHANGES=false
             if [ "$(git rev-parse HEAD)" != "$CHECKPOINT_SHA" ] || ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
@@ -176,7 +199,6 @@ jobs:
             fi
 
             if [ "$HAS_CHANGES" == "true" ]; then
-              # Tier 1: Both TypeScript build AND all Vitest tests pass -> Done!
               if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
                 git add -A
                 if ! git diff --cached --quiet; then
@@ -188,7 +210,6 @@ jobs:
                 break
               fi
 
-              # Tier 2a: Full repo compiles cleanly (even if Vitest assertions still fail) -> Save progress!
               if npm run build >/dev/null 2>&1; then
                 git add -A
                 if ! git diff --cached --quiet; then
@@ -197,7 +218,6 @@ jobs:
                 CHECKPOINT_SHA=$(git rev-parse HEAD)
                 echo "::notice::[$PROVIDER] $MODEL saved compiling TypeScript checkpoint (${CHECKPOINT_SHA:0:7}) for next model!"
               else
-                # Tier 2b: Check if src/ itself compiles cleanly when broken test files are reverted
                 git checkout "$CHECKPOINT_SHA" -- tests/ 2>/dev/null || true
                 git clean -f tests/ 2>/dev/null || true
                 if [ -n "$(git status --porcelain src/)" ] && npm run build >/dev/null 2>&1; then
@@ -212,7 +232,7 @@ jobs:
                 fi
               fi
             else
-              echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or timed out)."
+              echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or stalled)."
             fi
             sleep 2
           done
