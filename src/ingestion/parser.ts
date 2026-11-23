@@ -2,15 +2,15 @@ import * as ts from 'typescript';
 import * as fs from 'node:fs/promises';
 import { ASTNode, ASTNodeSchema, ModuleContainer } from '../schemas.js';
 
-let nodeIdCounter = 0;
-
-function generateNodeId(): string {
-  nodeIdCounter += 1;
-  return `node_${nodeIdCounter}`;
-}
-
-function resetNodeIdCounter(): void {
-  nodeIdCounter = 0;
+function generateNodeId(existingIds: Set<string>): string {
+  let counter = 1;
+  let id = `node_${counter}`;
+  while (existingIds.has(id)) {
+    counter++;
+    id = `node_${counter}`;
+  }
+  existingIds.add(id);
+  return id;
 }
 
 function parseParameter(param: ts.ParameterDeclaration, sourceFile: ts.SourceFile): { name: string; tsType: string } {
@@ -28,7 +28,11 @@ function hasUnsupportedParameterSyntax(node: ts.FunctionDeclaration): boolean {
   );
 }
 
-function parseFunctionDeclaration(node: ts.FunctionDeclaration, sourceFile: ts.SourceFile): ASTNode {
+function parseFunctionDeclaration(
+  node: ts.FunctionDeclaration,
+  sourceFile: ts.SourceFile,
+  existingIds: Set<string>
+): ASTNode {
   const isAsync = node.modifiers?.some(m => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false;
   const functionName = node.name?.getText(sourceFile) ?? 'anonymous';
   const parameters = node.parameters.map(p => parseParameter(p, sourceFile));
@@ -38,7 +42,7 @@ function parseFunctionDeclaration(node: ts.FunctionDeclaration, sourceFile: ts.S
   const body: ASTNode[] = [];
   if (node.body) {
     for (const statement of node.body.statements) {
-      const parsed = parseStatement(statement, sourceFile);
+      const parsed = parseStatement(statement, sourceFile, existingIds);
       if (parsed) {
         body.push(parsed);
       }
@@ -46,7 +50,7 @@ function parseFunctionDeclaration(node: ts.FunctionDeclaration, sourceFile: ts.S
   }
 
   return {
-    id: generateNodeId(),
+    id: generateNodeId(existingIds),
     type: 'AsyncFunctionBlock',
     functionName,
     parameters,
@@ -56,11 +60,11 @@ function parseFunctionDeclaration(node: ts.FunctionDeclaration, sourceFile: ts.S
   };
 }
 
-function parseTryStatement(node: ts.TryStatement, sourceFile: ts.SourceFile): ASTNode {
+function parseTryStatement(node: ts.TryStatement, sourceFile: ts.SourceFile, existingIds: Set<string>): ASTNode {
   const tryBranch: ASTNode[] = [];
   if (node.tryBlock) {
     for (const statement of node.tryBlock.statements) {
-      const parsed = parseStatement(statement, sourceFile);
+      const parsed = parseStatement(statement, sourceFile, existingIds);
       if (parsed) {
         tryBranch.push(parsed);
       }
@@ -75,7 +79,7 @@ function parseTryStatement(node: ts.TryStatement, sourceFile: ts.SourceFile): AS
     }
     if (node.catchClause.block) {
       for (const statement of node.catchClause.block.statements) {
-        const parsed = parseStatement(statement, sourceFile);
+        const parsed = parseStatement(statement, sourceFile, existingIds);
         if (parsed) {
           catchBranch.push(parsed);
         }
@@ -84,7 +88,7 @@ function parseTryStatement(node: ts.TryStatement, sourceFile: ts.SourceFile): AS
   }
 
   return {
-    id: generateNodeId(),
+    id: generateNodeId(existingIds),
     type: 'TryCatchGuardian',
     tryBranch,
     catchBranch,
@@ -92,19 +96,19 @@ function parseTryStatement(node: ts.TryStatement, sourceFile: ts.SourceFile): AS
   };
 }
 
-function parseIfStatement(node: ts.IfStatement, sourceFile: ts.SourceFile): ASTNode {
+function parseIfStatement(node: ts.IfStatement, sourceFile: ts.SourceFile, existingIds: Set<string>): ASTNode {
   const conditionExpression = node.expression.getText(sourceFile);
   
   const trueBranch: ASTNode[] = [];
   if (ts.isBlock(node.thenStatement)) {
     for (const statement of node.thenStatement.statements) {
-      const parsed = parseStatement(statement, sourceFile);
+      const parsed = parseStatement(statement, sourceFile, existingIds);
       if (parsed) {
         trueBranch.push(parsed);
       }
     }
   } else {
-    const parsed = parseStatement(node.thenStatement, sourceFile);
+    const parsed = parseStatement(node.thenStatement, sourceFile, existingIds);
     if (parsed) {
       trueBranch.push(parsed);
     }
@@ -115,16 +119,16 @@ function parseIfStatement(node: ts.IfStatement, sourceFile: ts.SourceFile): ASTN
     falseBranch = [];
     if (ts.isBlock(node.elseStatement)) {
       for (const statement of node.elseStatement.statements) {
-        const parsed = parseStatement(statement, sourceFile);
+        const parsed = parseStatement(statement, sourceFile, existingIds);
         if (parsed) {
           falseBranch.push(parsed);
         }
       }
     } else if (ts.isIfStatement(node.elseStatement)) {
-      const parsed = parseIfStatement(node.elseStatement, sourceFile);
+      const parsed = parseIfStatement(node.elseStatement, sourceFile, existingIds);
       falseBranch.push(parsed);
     } else {
-      const parsed = parseStatement(node.elseStatement, sourceFile);
+      const parsed = parseStatement(node.elseStatement, sourceFile, existingIds);
       if (parsed) {
         falseBranch.push(parsed);
       }
@@ -132,7 +136,7 @@ function parseIfStatement(node: ts.IfStatement, sourceFile: ts.SourceFile): ASTN
   }
 
   return {
-    id: generateNodeId(),
+    id: generateNodeId(existingIds),
     type: 'ConditionalBranch',
     conditionExpression,
     trueBranch,
@@ -140,7 +144,7 @@ function parseIfStatement(node: ts.IfStatement, sourceFile: ts.SourceFile): ASTN
   };
 }
 
-function parseLoopStatement(node: ts.ForOfStatement | ts.WhileStatement, sourceFile: ts.SourceFile): ASTNode {
+function parseLoopStatement(node: ts.ForOfStatement | ts.WhileStatement, sourceFile: ts.SourceFile, existingIds: Set<string>): ASTNode {
   let loopType: 'forOf' | 'while' = 'while';
   let loopHeader = '';
 
@@ -157,20 +161,20 @@ function parseLoopStatement(node: ts.ForOfStatement | ts.WhileStatement, sourceF
   const body: ASTNode[] = [];
   if (ts.isBlock(node.statement)) {
     for (const statement of node.statement.statements) {
-      const parsed = parseStatement(statement, sourceFile);
+      const parsed = parseStatement(statement, sourceFile, existingIds);
       if (parsed) {
         body.push(parsed);
       }
     }
   } else {
-    const parsed = parseStatement(node.statement, sourceFile);
+    const parsed = parseStatement(node.statement, sourceFile, existingIds);
     if (parsed) {
       body.push(parsed);
     }
   }
 
   return {
-    id: generateNodeId(),
+    id: generateNodeId(existingIds),
     type: 'LoopInterval',
     loopType,
     loopHeader,
@@ -178,7 +182,7 @@ function parseLoopStatement(node: ts.ForOfStatement | ts.WhileStatement, sourceF
   };
 }
 
-function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode {
+function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile, existingIds: Set<string>): ASTNode {
   let codeSnippet = node.getText(sourceFile);
   const isLoopWithEmptyBody =
     (ts.isForStatement(node) ||
@@ -192,47 +196,47 @@ function parseExpressionBlock(node: ts.Statement, sourceFile: ts.SourceFile): AS
   }
 
   return {
-    id: generateNodeId(),
+    id: generateNodeId(existingIds),
     type: 'ExpressionBlock',
     codeSnippet,
   };
 }
 
-function parseStatement(node: ts.Statement, sourceFile: ts.SourceFile): ASTNode | null {
+function parseStatement(node: ts.Statement, sourceFile: ts.SourceFile, existingIds: Set<string>): ASTNode | null {
   if (ts.isImportDeclaration(node)) {
     return null;
   }
 
   if (ts.isFunctionDeclaration(node)) {
     if ((node.typeParameters && node.typeParameters.length > 0) || hasUnsupportedParameterSyntax(node)) {
-      return parseExpressionBlock(node, sourceFile);
+      return parseExpressionBlock(node, sourceFile, existingIds);
     }
-    return parseFunctionDeclaration(node, sourceFile);
+    return parseFunctionDeclaration(node, sourceFile, existingIds);
   }
 
   if (ts.isTryStatement(node)) {
     if (node.finallyBlock) {
-      return parseExpressionBlock(node, sourceFile);
+      return parseExpressionBlock(node, sourceFile, existingIds);
     }
-    return parseTryStatement(node, sourceFile);
+    return parseTryStatement(node, sourceFile, existingIds);
   }
 
   if (ts.isIfStatement(node)) {
-    return parseIfStatement(node, sourceFile);
+    return parseIfStatement(node, sourceFile, existingIds);
   }
 
   if (ts.isForOfStatement(node) || ts.isWhileStatement(node)) {
     if (ts.isForOfStatement(node) && node.awaitModifier) {
-      return parseExpressionBlock(node, sourceFile);
+      return parseExpressionBlock(node, sourceFile, existingIds);
     }
-    return parseLoopStatement(node, sourceFile);
+    return parseLoopStatement(node, sourceFile, existingIds);
   }
 
-  return parseExpressionBlock(node, sourceFile);
+  return parseExpressionBlock(node, sourceFile, existingIds);
 }
 
 export function parseTypeScriptCode(sourceCode: string, moduleName?: string): ASTNode {
-  resetNodeIdCounter();
+  const existingIds = new Set<string>();
 
   const sourceFile = ts.createSourceFile(
     'ingested.ts',
@@ -244,14 +248,14 @@ export function parseTypeScriptCode(sourceCode: string, moduleName?: string): AS
   const children: ASTNode[] = [];
 
   for (const statement of sourceFile.statements) {
-    const parsed = parseStatement(statement, sourceFile);
+    const parsed = parseStatement(statement, sourceFile, existingIds);
     if (parsed) {
       children.push(parsed);
     }
   }
 
   const moduleContainer: ModuleContainer = {
-    id: generateNodeId(),
+    id: generateNodeId(existingIds),
     type: 'ModuleContainer',
     moduleName: moduleName ?? 'ingested',
     exports: [],

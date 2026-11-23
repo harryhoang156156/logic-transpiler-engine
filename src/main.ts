@@ -22,22 +22,45 @@ export interface EnginePipelineOptions {
   clientOverride?: any;
 }
 
-let nodeIdCounter = 0;
-
-function generateNodeId(): string {
-  nodeIdCounter += 1;
-  return `node_${nodeIdCounter}`;
+function generateNodeId(existingIds: Set<string>): string {
+  let counter = 1;
+  let id = `node_${counter}`;
+  while (existingIds.has(id)) {
+    counter++;
+    id = `node_${counter}`;
+  }
+  existingIds.add(id);
+  return id;
 }
 
-function resetNodeIdCounter(): void {
-  nodeIdCounter = 0;
+function collectExistingIds(node: ASTNode, ids: Set<string>): void {
+  ids.add(node.id);
+  const childKeys = [
+    'children',
+    'body',
+    'tryBranch',
+    'catchBranch',
+    'trueBranch',
+    'falseBranch',
+    'callbackBody',
+  ] as const;
+
+  for (const key of childKeys) {
+    if (key in node) {
+      const children = (node as any)[key];
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (child && typeof child === 'object' && 'id' in child) {
+            collectExistingIds(child as ASTNode, ids);
+          }
+        }
+      }
+    }
+  }
 }
 
-function remapNodeIds(node: ASTNode, idMap: Map<string, string> = new Map()): ASTNode {
-  const oldId = node.id;
-  const newId = generateNodeId();
-  idMap.set(oldId, newId);
-
+function remapNodeIds(node: ASTNode, existingIds: Set<string>): ASTNode {
+  const newId = generateNodeId(existingIds);
   const newNode: ASTNode = { ...node, id: newId };
 
   const childKeys = [
@@ -54,7 +77,7 @@ function remapNodeIds(node: ASTNode, idMap: Map<string, string> = new Map()): AS
     if (key in newNode) {
       const children = (newNode as any)[key];
       if (Array.isArray(children)) {
-        (newNode as any)[key] = children.map((child: ASTNode) => remapNodeIds(child, idMap));
+        (newNode as any)[key] = children.map((child: ASTNode) => remapNodeIds(child, existingIds));
       }
     }
   }
@@ -152,6 +175,10 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
       const subgraphs = extractTargetSubgraphs(rootAst, report);
       const patches: AtomicPatchOperation[] = [];
 
+      // Collect existing IDs from rootAst to avoid conflicts
+      const existingIds = new Set<string>();
+      collectExistingIds(rootAst, existingIds);
+
       for (const actionItem of report.actions) {
         if (actionItem.resolution === 'KEEP_AS_IS') {
           continue;
@@ -161,8 +188,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
           const newNode = await requestAstGeneration(subBrief, contextJson, options.clientOverride);
           
           // Remap IDs to avoid collisions with existing tree
-          resetNodeIdCounter();
-          const remappedNode = remapNodeIds(newNode);
+          const remappedNode = remapNodeIds(newNode, existingIds);
           
           // Validate replacement contract
           const targetNode = subgraphs.get(actionItem.targetNodeId);
@@ -180,8 +206,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
           const newNode = await requestAstGeneration(subBrief, undefined, options.clientOverride);
           
           // Remap IDs to avoid collisions
-          resetNodeIdCounter();
-          const remappedNode = remapNodeIds(newNode);
+          const remappedNode = remapNodeIds(newNode, existingIds);
           
           patches.push({
             action: 'APPEND_TO_MODULE',
@@ -194,14 +219,14 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
     } else {
       const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
       validateRootModuleContainer(newNode);
-      resetNodeIdCounter();
-      currentAst = remapNodeIds(newNode);
+      const existingIds = new Set<string>();
+      currentAst = remapNodeIds(newNode, existingIds);
     }
   } else {
     const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
     validateRootModuleContainer(newNode);
-    resetNodeIdCounter();
-    currentAst = remapNodeIds(newNode);
+    const existingIds = new Set<string>();
+    currentAst = remapNodeIds(newNode, existingIds);
   }
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -224,8 +249,8 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
     if (attempt < maxRetries) {
       currentAst = await requestAstCorrection(currentAst, verification.errors, options.clientOverride);
       validateRootModuleContainer(currentAst);
-      resetNodeIdCounter();
-      currentAst = remapNodeIds(currentAst);
+      const existingIds = new Set<string>();
+      currentAst = remapNodeIds(currentAst, existingIds);
     } else {
       throw new Error(`Compiler guard failed after ${maxRetries} attempts:\n${verification.errors.join('\n')}`);
     }

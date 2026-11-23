@@ -274,6 +274,11 @@ describe('integration', () => {
     const gapReport = {
       actions: [
         {
+          targetNodeId: moduleId,
+          resolution: 'KEEP_AS_IS' as const,
+          reasoning: 'module unchanged',
+        },
+        {
           targetNodeId: keepMeId!,
           resolution: 'KEEP_AS_IS' as const,
           reasoning: 'unchanged',
@@ -690,12 +695,21 @@ describe('integration', () => {
             isExported: true,
             body: [],
           },
+          {
+            id: 'func2',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func2',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
         ],
       };
 
-      // Replacement node has same ID as an existing node in the tree
+      // Replacement node has same ID as another existing node in the tree (func2)
       const replacementFunc: AsyncFunctionBlock = {
-        id: 'func1', // Duplicate ID!
+        id: 'func2', // Duplicate ID with existing func2!
         type: 'AsyncFunctionBlock',
         functionName: 'func1',
         parameters: [],
@@ -709,7 +723,7 @@ describe('integration', () => {
       ];
 
       expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
-        /Duplicate node ID detected in merged AST: "func1"/
+        /Duplicate node ID detected in merged AST: "func2"/
       );
     });
 
@@ -827,6 +841,11 @@ describe('integration', () => {
 
       const gapReport = {
         actions: [
+          {
+            targetNodeId: moduleId,
+            resolution: 'KEEP_AS_IS' as const,
+            reasoning: 'module unchanged',
+          },
           {
             targetNodeId: existingId!,
             resolution: 'MUTATE_EXISTING' as const,
@@ -1012,6 +1031,11 @@ describe('integration', () => {
       const gapReport = {
         actions: [
           {
+            targetNodeId: moduleId,
+            resolution: 'KEEP_AS_IS' as const,
+            reasoning: 'module unchanged',
+          },
+          {
             targetNodeId: funcId!,
             resolution: 'MUTATE_EXISTING' as const,
             reasoning: 'replace with different type',
@@ -1063,6 +1087,11 @@ describe('integration', () => {
 
       const gapReport = {
         actions: [
+          {
+            targetNodeId: moduleId,
+            resolution: 'KEEP_AS_IS' as const,
+            reasoning: 'module unchanged',
+          },
           {
             targetNodeId: funcId!,
             resolution: 'MUTATE_EXISTING' as const,
@@ -1119,6 +1148,11 @@ describe('integration', () => {
 
       const gapReport = {
         actions: [
+          {
+            targetNodeId: moduleId,
+            resolution: 'KEEP_AS_IS' as const,
+            reasoning: 'module unchanged',
+          },
           {
             targetNodeId: funcId!,
             resolution: 'MUTATE_EXISTING' as const,
