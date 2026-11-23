@@ -132,7 +132,6 @@ jobs:
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
 
-            # Dynamically gather editable files (existing src/ for integration + any checkpointed files already created)
             shopt -s globstar nullglob
             EDIT_FILES=()
             if [[ "$SPEC_FILE" == *integration* ]]; then
@@ -166,7 +165,7 @@ jobs:
             echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
             echo "=================================================="
 
-            timeout 6m aider \
+            timeout 12m aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
@@ -181,56 +180,37 @@ jobs:
               --message "$PROMPT" \
               2>&1 | tee /tmp/aider.log | grep -viE "<(!DOCTYPE|html|head|body|script|style|svg|path|div|span|meta|link)" || true
 
-            git add -A
-            if ! git diff --cached --quiet; then
-              git commit -m "chore: checkpoint aider progress" >/dev/null
-            fi
-            NEW_SHA=$(git rev-parse HEAD)
-
-            # Tier 1: Full Pass (Build + All Tests Green) -> Exit immediately!
-            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ] \
-               && npm run build >/dev/null 2>&1 \
-               && npm run test >/dev/null 2>&1; then
-              echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL"
-              SUCCESS=true
-              break
+            HAS_CHANGES=false
+            if [ "$(git rev-parse HEAD)" != "$CHECKPOINT_SHA" ] || ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; then
+              HAS_CHANGES=true
             fi
 
-            # Tier 2: Salvage any commit made by this model (prefer full build+test pass, fallback to clean TypeScript build)
-            SAVED_TIER2=false
-            if [ "$NEW_SHA" != "$CHECKPOINT_SHA" ]; then
-              for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
-                git reset --hard "$COMMIT" >/dev/null
-                git clean -f >/dev/null
-                if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
-                  echo "::notice::[$PROVIDER] $MODEL salvaged full passing checkpoint ($COMMIT)!"
-                  CHECKPOINT_SHA="$COMMIT"
-                  SAVED_TIER2=true
-                  SUCCESS=true
-                  break
+            if [ "$HAS_CHANGES" == "true" ]; then
+              if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
+                git add -A
+                if ! git diff --cached --quiet; then
+                  git commit -m "chore: checkpoint passing build and tests" >/dev/null
                 fi
-              done
-
-              if [ "$SUCCESS" == "true" ]; then
+                CHECKPOINT_SHA=$(git rev-parse HEAD)
+                echo "Successfully completed Aider TDD loop via [$PROVIDER] $MODEL"
+                SUCCESS=true
                 break
               fi
 
-              for COMMIT in $(git rev-list "${CHECKPOINT_SHA}..${NEW_SHA}"); do
-                git reset --hard "$COMMIT" >/dev/null
-                git clean -f >/dev/null
-                if npm run build >/dev/null 2>&1; then
-                  echo "::notice::[$PROVIDER] $MODEL saved TypeScript-compiling checkpoint (${COMMIT:0:7}) for next model to finish tests!"
-                  CHECKPOINT_SHA="$COMMIT"
-                  SAVED_TIER2=true
-                  break
+              if npm run build >/dev/null 2>&1; then
+                git add -A
+                if ! git diff --cached --quiet; then
+                  git commit -m "chore: checkpoint compiling typescript progress" >/dev/null
                 fi
-              done
-            fi
-
-            if [ "$SAVED_TIER2" != "true" ]; then
-              echo "::warning::[$PROVIDER] $MODEL failed, timed out, or left broken TypeScript. Rolling back to ${CHECKPOINT_SHA:0:7}..."
-              git reset --hard "$CHECKPOINT_SHA" >/dev/null
-              git clean -f >/dev/null
+                CHECKPOINT_SHA=$(git rev-parse HEAD)
+                echo "::notice::[$PROVIDER] $MODEL saved compiling TypeScript checkpoint (${CHECKPOINT_SHA:0:7}) for next model!"
+              else
+                echo "::warning::[$PROVIDER] $MODEL left broken TypeScript. Rolling back to ${CHECKPOINT_SHA:0:7}..."
+                git reset --hard "$CHECKPOINT_SHA" >/dev/null
+                git clean -f >/dev/null
+              fi
+            else
+              echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or timed out)."
             fi
             sleep 3
           done
