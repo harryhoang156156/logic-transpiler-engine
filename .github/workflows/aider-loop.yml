@@ -49,7 +49,7 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Run Aider Self-Healing Loop (Google -> 3x OpenRouter -> Kilo)
+      - name: Run Aider Self-Healing Loop (Fast Multi-Key Cascade)
         env:
           GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OR_KEY_1: ${{ secrets.OPENROUTER_API_KEY }}
@@ -66,7 +66,6 @@ jobs:
           INITIAL_SHA=$(git rev-parse HEAD)
           CHECKPOINT_SHA="$INITIAL_SHA"
 
-          shopt -s globstar nullglob
           BASE_READ_FLAGS=(--read "$SPEC_FILE")
           if [ -n "$OVERVIEW_FILE" ] && [ -f "$OVERVIEW_FILE" ]; then
             BASE_READ_FLAGS+=(--read "$OVERVIEW_FILE")
@@ -77,24 +76,14 @@ jobs:
           if [[ "$SPEC_FILE" != *integration* ]] && [ -f "src/schemas.ts" ]; then
             BASE_READ_FLAGS+=(--read "src/schemas.ts")
           fi
-          shopt -u globstar nullglob
 
+          # Lean 6-entry cascade (best model per key) -> max ~30 mins worst-case instead of 1+ hour
           CANDIDATES=(
             "google|gemini/gemini-3.8-flash"
-            "google|gemini/gemini-3.5-flash-lite"
-            "google|gemini/gemma-4-31b-it"
             "openrouter1|openrouter/particle-ai/particle-1:free"
-            "openrouter1|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter1|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter1|openrouter/baidu/ernie-5.5-flash-preview:free"
-            "openrouter2|openrouter/particle-ai/particle-1:free"
             "openrouter2|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter2|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter2|openrouter/baidu/ernie-5.5-flash-preview:free"
             "openrouter3|openrouter/particle-ai/particle-1:free"
-            "openrouter3|openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
-            "openrouter3|openrouter/nvidia/nemotron-3.5-super-vl:free"
-            "openrouter3|openrouter/baidu/ernie-5.5-flash-preview:free"
+            "google|gemini/gemini-3.5-flash-lite"
             "kilo|openai/kilo-auto/free"
           )
 
@@ -165,10 +154,11 @@ jobs:
             echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
             echo "=================================================="
 
-            timeout 12m aider \
+            timeout 5m aider \
               --model "$MODEL" \
               --edit-format whole \
               --map-tokens 1024 \
+              --chat-history-file /tmp/aider-tdd-history.md \
               --no-detect-urls \
               --no-show-model-warnings \
               --yes \
@@ -186,6 +176,7 @@ jobs:
             fi
 
             if [ "$HAS_CHANGES" == "true" ]; then
+              # Tier 1: Both TypeScript build AND all Vitest tests pass -> Done!
               if npm run build >/dev/null 2>&1 && npm run test >/dev/null 2>&1; then
                 git add -A
                 if ! git diff --cached --quiet; then
@@ -197,28 +188,39 @@ jobs:
                 break
               fi
 
+              # Tier 2a: Full repo compiles cleanly (even if Vitest assertions still fail) -> Save progress!
               if npm run build >/dev/null 2>&1; then
                 git add -A
                 if ! git diff --cached --quiet; then
-                  git commit -m "chore: checkpoint compiling typescript progress" >/dev/null
+                  git commit -m "chore: checkpoint compiling build progress" >/dev/null
                 fi
                 CHECKPOINT_SHA=$(git rev-parse HEAD)
                 echo "::notice::[$PROVIDER] $MODEL saved compiling TypeScript checkpoint (${CHECKPOINT_SHA:0:7}) for next model!"
               else
-                echo "::warning::[$PROVIDER] $MODEL left broken TypeScript. Rolling back to ${CHECKPOINT_SHA:0:7}..."
-                git reset --hard "$CHECKPOINT_SHA" >/dev/null
-                git clean -f >/dev/null
+                # Tier 2b: Check if src/ itself compiles cleanly when broken test files are reverted
+                git checkout "$CHECKPOINT_SHA" -- tests/ 2>/dev/null || true
+                git clean -f tests/ 2>/dev/null || true
+                if [ -n "$(git status --porcelain src/)" ] && npm run build >/dev/null 2>&1; then
+                  git add src/
+                  git commit -m "chore: checkpoint compiling src/ implementation" >/dev/null
+                  CHECKPOINT_SHA=$(git rev-parse HEAD)
+                  echo "::notice::[$PROVIDER] $MODEL saved compiling src/ checkpoint (${CHECKPOINT_SHA:0:7}); next model will write tests!"
+                else
+                  echo "::warning::[$PROVIDER] $MODEL left broken TypeScript. Rolling back to ${CHECKPOINT_SHA:0:7}..."
+                  git reset --hard "$CHECKPOINT_SHA" >/dev/null
+                  git clean -f >/dev/null
+                fi
               fi
             else
               echo "::warning::[$PROVIDER] $MODEL made no file changes (rate-limited or timed out)."
             fi
-            sleep 3
+            sleep 2
           done
 
           if [ "$SUCCESS" != "true" ]; then
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
-            echo "::error::All provider keys hit rate limits or failed. Wait a few minutes and re-run."
+            echo "::error::All provider keys hit rate limits or failed. Wait for quota reset and re-run."
             exit 1
           fi
 
