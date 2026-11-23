@@ -1,0 +1,40 @@
+name: Trigger Full SRC CodeRabbit Audit
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Open PR number to include all src/ files in'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  touch-src:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: gh pr checkout "${{ github.event.inputs.pr_number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Touch all src files safely
+        run: |
+          shopt -s globstar nullglob
+          for f in src/**/*.ts; do
+            printf "\n" >> "$f"
+          done
+      - run: npm ci --silent --no-progress && npm run build && npm run test
+      - name: Push to PR
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@://github.com"
+          git add src/
+          git commit -m "chore: include full src/ in PR for architectural audit"
+          git push
