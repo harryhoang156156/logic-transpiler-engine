@@ -2,7 +2,7 @@ import { ASTNode, ASTNodeSchema } from '../schemas.js';
 
 export interface AtomicPatchOperation {
   action: 'REPLACE' | 'APPEND_TO_MODULE';
-  targetNodeId?: string; // Required for REPLACE
+  targetNodeId?: string; // Required for REPLACE, optional for APPEND_TO_MODULE (nested placement)
   newNode: ASTNode;
 }
 
@@ -44,6 +44,26 @@ function findNodePath(node: ASTNode, targetId: string, path: ASTNode[] = []): AS
         for (const child of children) {
           if (child && typeof child === 'object') {
             const res = findNodePath(child as ASTNode, targetId, [...path, node]);
+            if (res) return res;
+          }
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function findNodeAndParent(node: ASTNode, targetId: string, parent: ASTNode | null = null, parentKey: string | null = null): { node: ASTNode; parent: ASTNode | null; parentKey: string | null } | null {
+  if (node.id === targetId) {
+    return { node, parent, parentKey };
+  }
+  for (const key of CHILD_ARRAY_KEYS) {
+    if (key in node) {
+      const children = (node as any)[key];
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (child && typeof child === 'object') {
+            const res = findNodeAndParent(child as ASTNode, targetId, node, key);
             if (res) return res;
           }
         }
@@ -98,6 +118,39 @@ function validateUniqueIds(node: ASTNode, seen: Set<string> = new Set()): void {
         }
       }
     }
+  }
+}
+
+function getAppendTargetArray(parent: ASTNode, parentKey: string | null): ASTNode[] | null {
+  // Determine which child array to append to based on parent node type and key
+  if (parentKey) {
+    // If we know the specific key (e.g., 'body', 'children'), use it
+    if (parentKey in parent) {
+      const arr = (parent as any)[parentKey];
+      if (Array.isArray(arr)) {
+        return arr;
+      }
+    }
+  }
+  
+  // Fallback: determine appropriate array based on node type
+  switch (parent.type) {
+    case 'ModuleContainer':
+      return parent.children;
+    case 'AsyncFunctionBlock':
+      return parent.body;
+    case 'TryCatchGuardian':
+      // Default to tryBranch for try-catch
+      return parent.tryBranch;
+    case 'ConditionalBranch':
+      // Default to trueBranch for conditionals
+      return parent.trueBranch;
+    case 'LoopInterval':
+      return parent.body;
+    case 'Solana_ListenPumpFun':
+      return parent.callbackBody;
+    default:
+      return null;
   }
 }
 
@@ -194,12 +247,29 @@ export function applyAtomicPatches(
         throw new Error(`Target node id "${targetId}" not found in AST during replacement.`);
       }
     } else if (op.action === 'APPEND_TO_MODULE') {
-      if (clonedAst.type !== 'ModuleContainer') {
-        throw new Error(
-          `Cannot append to module: root AST node type is "${clonedAst.type}", expected "ModuleContainer".`
-        );
+      let targetArray: ASTNode[] | null = null;
+      
+      if (op.targetNodeId) {
+        // Find the target node and determine which child array to append to
+        const found = findNodeAndParent(clonedAst, op.targetNodeId);
+        if (!found) {
+          throw new Error(`Target node id "${op.targetNodeId}" not found for APPEND_TO_MODULE.`);
+        }
+        targetArray = getAppendTargetArray(found.node, found.parentKey);
+        if (!targetArray) {
+          throw new Error(`Node "${op.targetNodeId}" (type: ${found.node.type}) does not have a valid child array to append to.`);
+        }
+      } else {
+        // Append to module root (backward compatibility)
+        if (clonedAst.type !== 'ModuleContainer') {
+          throw new Error(
+            `Cannot append to module: root AST node type is "${clonedAst.type}", expected "ModuleContainer".`
+          );
+        }
+        targetArray = clonedAst.children;
       }
-      (clonedAst as any).children.push(clonedNewNode);
+      
+      targetArray.push(clonedNewNode);
     }
   }
 
@@ -208,4 +278,3 @@ export function applyAtomicPatches(
 
   return ASTNodeSchema.parse(clonedAst);
 }
-
