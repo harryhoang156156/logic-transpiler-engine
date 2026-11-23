@@ -179,6 +179,10 @@ function hasUnsupportedKeywords(node: any): boolean {
 
 function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any>; strict: boolean } {
   const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' }) as Record<string, any>;
+  
+  // Strip root $schema metadata as required by OpenAI structured outputs
+  delete jsonSchema.$schema;
+  
   const unsupported = hasUnsupportedKeywords(jsonSchema);
   if (unsupported) {
     // Return the original converted schema; strict rewriting and null
@@ -207,6 +211,7 @@ function resolveRef(ref: string, rootSchema: any): any {
  * Recursively removes `null` values from parsed LLM output for properties
  * that were made nullable during strict-schema conversion (optional properties).
  * Uses the strict schema structure and resolves $ref recursively at every depth.
+ * Also traverses into anyOf union branches to normalize nested nullable fields.
  */
 function stripNulls(value: any, schema: any, rootSchema: any): any {
   if (value === null || value === undefined) {
@@ -266,6 +271,20 @@ function stripNulls(value: any, schema: any, rootSchema: any): any {
       result[key] = stripNulls(val, nonNullSubSchema, rootSchema);
     }
     return result;
+  }
+
+  // Handle anyOf unions that are not optional wrappers (e.g., discriminated unions)
+  if (schema.anyOf && Array.isArray(schema.anyOf)) {
+    // Try each branch until one matches
+    for (const branchSchema of schema.anyOf) {
+      if (branchSchema.type === 'null') continue;
+      const stripped = stripNulls(value, branchSchema, rootSchema);
+      // If the branch schema has properties, check if the stripped result is valid
+      if (branchSchema.properties || branchSchema.type === 'object') {
+        return stripped;
+      }
+    }
+    return value;
   }
 
   return value;

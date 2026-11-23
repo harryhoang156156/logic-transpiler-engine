@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { runEnginePipeline } from '../src/main.js';
 import { verifyTypeScriptCode } from '../src/verification/compiler_guard.js';
 import { parseTypeScriptFile } from '../src/ingestion/parser.js';
-import { ASTNode } from '../src/schemas.js';
+import { applyAtomicPatches, AtomicPatchOperation } from '../src/compiler/atomic_merger.js';
+import { ASTNode, ModuleContainer, AsyncFunctionBlock } from '../src/schemas.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -547,4 +548,623 @@ describe('integration', () => {
     expect(mainGone).toBe(true);
     expect(childGone).toBe(true);
   }, 10000);
+
+  // --- New regression tests for the 4 cross-module fixes ---
+
+  describe('atomic_merger overlapping replacement detection', () => {
+    it('rejects ancestor/descendant REPLACE conflicts', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'expr1',
+                type: 'ExpressionBlock',
+                codeSnippet: 'console.log("inner")',
+              },
+            ],
+          },
+        ],
+      };
+
+      const replacementFunc: AsyncFunctionBlock = {
+        id: 'new_func1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const replacementExpr: ASTNode = {
+        id: 'new_expr1',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("replaced")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc },
+        { action: 'REPLACE', targetNodeId: 'expr1', newNode: replacementExpr },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Overlapping REPLACE targets detected/
+      );
+    });
+
+    it('allows non-overlapping REPLACE operations', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+          {
+            id: 'func2',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func2',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+        ],
+      };
+
+      const replacementFunc1: AsyncFunctionBlock = {
+        id: 'new_func1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [
+          {
+            id: 'expr1',
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log("func1")',
+          },
+        ],
+      };
+
+      const replacementFunc2: AsyncFunctionBlock = {
+        id: 'new_func2',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func2',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [
+          {
+            id: 'expr2',
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log("func2")',
+          },
+        ],
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc1 },
+        { action: 'REPLACE', targetNodeId: 'func2', newNode: replacementFunc2 },
+      ];
+
+      const result = applyAtomicPatches(rootAst, operations);
+      expect(result.children).toHaveLength(2);
+    });
+  });
+
+  describe('atomic_merger unique ID validation', () => {
+    it('throws on duplicate node IDs after merge', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+        ],
+      };
+
+      // Replacement node has same ID as an existing node in the tree
+      const replacementFunc: AsyncFunctionBlock = {
+        id: 'func1', // Duplicate ID!
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Duplicate node ID detected in merged AST: "func1"/
+      );
+    });
+
+    it('throws on duplicate IDs within replacement subtree', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+        ],
+      };
+
+      // Replacement subtree has duplicate IDs internally
+      const replacementFunc: AsyncFunctionBlock = {
+        id: 'new_func1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [
+          {
+            id: 'dup',
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log(1)',
+          },
+          {
+            id: 'dup', // Duplicate!
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log(2)',
+          },
+        ],
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Duplicate node ID detected in merged AST: "dup"/
+      );
+    });
+  });
+
+  describe('main.ts node ID remapping', () => {
+    it('remaps node IDs in greenfield generation to avoid collisions', async () => {
+      const dir = await makeTempDir();
+      const outFile = path.join(dir, 'bot.ts');
+
+      // AST with duplicate IDs (simulating LLM output)
+      const greenfieldAst: ASTNode = {
+        id: 'node_1',
+        type: 'ModuleContainer',
+        moduleName: 'generated_bot',
+        exports: [],
+        children: [
+          {
+            id: 'node_1', // Duplicate with root!
+            type: 'AsyncFunctionBlock',
+            functionName: 'runBot',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'node_1', // Duplicate again!
+                type: 'ExpressionBlock',
+                codeSnippet: 'console.log("test")',
+              },
+            ],
+          },
+        ],
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify({ ast: greenfieldAst }) },
+      ]);
+
+      const result = await runEnginePipeline({
+        brief: 'Create a Solana trading bot',
+        outputFilePath: outFile,
+        clientOverride,
+      });
+
+      expect(result.success).toBe(true);
+
+      const writtenCode = await fs.readFile(outFile, 'utf-8');
+      const verification = await verifyTypeScriptCode(writtenCode, process.cwd());
+      expect(verification.success).toBe(true);
+    });
+
+    it('remaps node IDs in mutation/spawn operations', async () => {
+      const dir = await makeTempDir();
+      const blueprintPath = path.join(dir, 'blueprint.ts');
+      const outFile = path.join(dir, 'output.ts');
+
+      await fs.writeFile(
+        blueprintPath,
+        `export async function existing() {\n  console.log('existing');\n}\n`
+      );
+
+      const rootAst = await parseTypeScriptFile(blueprintPath);
+      const existingId = findNodeByName(rootAst, 'existing');
+      const moduleId = rootAst.id;
+
+      const gapReport = {
+        actions: [
+          {
+            targetNodeId: existingId!,
+            resolution: 'MUTATE_EXISTING' as const,
+            reasoning: 'update',
+            specificationForMutation: 'add logging',
+          },
+          {
+            targetNodeId: moduleId,
+            resolution: 'SPAWN_NEW' as const,
+            reasoning: 'new function',
+            specificationForMutation: 'create new',
+          },
+        ],
+      };
+
+      // Mutated and spawned nodes with conflicting IDs
+      const mutatedAst: ASTNode = {
+        id: existingId!, // Same as target - will be remapped
+        type: 'AsyncFunctionBlock',
+        functionName: 'existing',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [
+          {
+            id: 'node_1', // Will conflict with root's counter
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log("mutated")',
+          },
+        ],
+      };
+
+      const spawnedAst: ASTNode = {
+        id: 'node_1', // Will conflict
+        type: 'AsyncFunctionBlock',
+        functionName: 'newFunc',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [
+          {
+            id: 'node_1', // Will conflict
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log("spawned")',
+          },
+        ],
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify(gapReport) },
+        { content: JSON.stringify({ ast: mutatedAst }) },
+        { content: JSON.stringify({ ast: spawnedAst }) },
+      ]);
+
+      const result = await runEnginePipeline({
+        brief: 'Update blueprint',
+        sourceFilePath: blueprintPath,
+        outputFilePath: outFile,
+        clientOverride,
+      });
+
+      expect(result.success).toBe(true);
+
+      const outputCode = await fs.readFile(outFile, 'utf-8');
+      expect(outputCode).toContain('async function existing()');
+      expect(outputCode).toContain('async function newFunc()');
+
+      const verification = await verifyTypeScriptCode(outputCode, process.cwd());
+      expect(verification.success).toBe(true);
+    });
+  });
+
+  describe('main.ts root ModuleContainer validation', () => {
+    it('rejects non-ModuleContainer root from greenfield generation', async () => {
+      const dir = await makeTempDir();
+      const outFile = path.join(dir, 'bot.ts');
+
+      // LLM returns an AsyncFunctionBlock as root (invalid)
+      const invalidAst: ASTNode = {
+        id: 'node_1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'runBot',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify({ ast: invalidAst }) },
+      ]);
+
+      let threw = false;
+      try {
+        await runEnginePipeline({
+          brief: 'Create bot',
+          outputFilePath: outFile,
+          clientOverride,
+        });
+      } catch (err) {
+        threw = true;
+        expect((err as Error).message).toContain('Root AST node must be a ModuleContainer');
+      }
+      expect(threw).toBe(true);
+    });
+
+    it('rejects non-ModuleContainer root from correction loop', async () => {
+      const dir = await makeTempDir();
+      const outFile = path.join(dir, 'bot.ts');
+
+      // First attempt returns valid ModuleContainer but with error
+      const brokenAst: ASTNode = {
+        id: 'node_1',
+        type: 'ModuleContainer',
+        moduleName: 'broken',
+        exports: [],
+        children: [
+          {
+            id: 'node_2',
+            type: 'AsyncFunctionBlock',
+            functionName: 'run',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'node_3',
+                type: 'ExpressionBlock',
+                codeSnippet: 'undefinedVariable.foo()',
+              },
+            ],
+          },
+        ],
+      };
+
+      // Correction returns invalid root type
+      const invalidCorrection: ASTNode = {
+        id: 'node_1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'run',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify({ ast: brokenAst }) },
+        { content: JSON.stringify({ ast: invalidCorrection }) },
+      ]);
+
+      let threw = false;
+      try {
+        await runEnginePipeline({
+          brief: 'Create bot',
+          outputFilePath: outFile,
+          maxRetries: 2,
+          clientOverride,
+        });
+      } catch (err) {
+        threw = true;
+        expect((err as Error).message).toContain('Root AST node must be a ModuleContainer');
+      }
+      expect(threw).toBe(true);
+    });
+  });
+
+  describe('main.ts replacement contract validation', () => {
+    it('rejects type mismatch in MUTATE_EXISTING replacement', async () => {
+      const dir = await makeTempDir();
+      const blueprintPath = path.join(dir, 'blueprint.ts');
+      const outFile = path.join(dir, 'output.ts');
+
+      await fs.writeFile(
+        blueprintPath,
+        `export async function myFunc() {\n  console.log('original');\n}\n`
+      );
+
+      const rootAst = await parseTypeScriptFile(blueprintPath);
+      const funcId = findNodeByName(rootAst, 'myFunc');
+      const moduleId = rootAst.id;
+
+      const gapReport = {
+        actions: [
+          {
+            targetNodeId: funcId!,
+            resolution: 'MUTATE_EXISTING' as const,
+            reasoning: 'replace with different type',
+            specificationForMutation: 'replace function with expression',
+          },
+        ],
+      };
+
+      // Replacement is an ExpressionBlock instead of AsyncFunctionBlock
+      const invalidReplacement: ASTNode = {
+        id: 'new_node',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("not a function")',
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify(gapReport) },
+        { content: JSON.stringify({ ast: invalidReplacement }) },
+      ]);
+
+      let threw = false;
+      try {
+        await runEnginePipeline({
+          brief: 'Update blueprint',
+          sourceFilePath: blueprintPath,
+          outputFilePath: outFile,
+          clientOverride,
+        });
+      } catch (err) {
+        threw = true;
+        expect((err as Error).message).toContain('Replacement node type "ExpressionBlock" does not match target node type "AsyncFunctionBlock"');
+      }
+      expect(threw).toBe(true);
+    });
+
+    it('rejects function name mismatch in MUTATE_EXISTING replacement', async () => {
+      const dir = await makeTempDir();
+      const blueprintPath = path.join(dir, 'blueprint.ts');
+      const outFile = path.join(dir, 'output.ts');
+
+      await fs.writeFile(
+        blueprintPath,
+        `export async function originalName() {\n  console.log('original');\n}\n`
+      );
+
+      const rootAst = await parseTypeScriptFile(blueprintPath);
+      const funcId = findNodeByName(rootAst, 'originalName');
+      const moduleId = rootAst.id;
+
+      const gapReport = {
+        actions: [
+          {
+            targetNodeId: funcId!,
+            resolution: 'MUTATE_EXISTING' as const,
+            reasoning: 'rename function',
+            specificationForMutation: 'rename to newName',
+          },
+        ],
+      };
+
+      // Replacement has different function name
+      const invalidReplacement: ASTNode = {
+        id: 'new_node',
+        type: 'AsyncFunctionBlock',
+        functionName: 'newName', // Different name!
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify(gapReport) },
+        { content: JSON.stringify({ ast: invalidReplacement }) },
+      ]);
+
+      let threw = false;
+      try {
+        await runEnginePipeline({
+          brief: 'Update blueprint',
+          sourceFilePath: blueprintPath,
+          outputFilePath: outFile,
+          clientOverride,
+        });
+      } catch (err) {
+        threw = true;
+        expect((err as Error).message).toContain('Function name mismatch');
+      }
+      expect(threw).toBe(true);
+    });
+
+    it('allows compatible AsyncFunctionBlock replacement', async () => {
+      const dir = await makeTempDir();
+      const blueprintPath = path.join(dir, 'blueprint.ts');
+      const outFile = path.join(dir, 'output.ts');
+
+      await fs.writeFile(
+        blueprintPath,
+        `export async function myFunc() {\n  console.log('original');\n}\n`
+      );
+
+      const rootAst = await parseTypeScriptFile(blueprintPath);
+      const funcId = findNodeByName(rootAst, 'myFunc');
+      const moduleId = rootAst.id;
+
+      const gapReport = {
+        actions: [
+          {
+            targetNodeId: funcId!,
+            resolution: 'MUTATE_EXISTING' as const,
+            reasoning: 'update body',
+            specificationForMutation: 'new body',
+          },
+        ],
+      };
+
+      // Valid replacement with same function name
+      const validReplacement: ASTNode = {
+        id: 'new_node',
+        type: 'AsyncFunctionBlock',
+        functionName: 'myFunc', // Same name
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [
+          {
+            id: 'expr1',
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log("updated")',
+          },
+        ],
+      };
+
+      const clientOverride = createMockClient([
+        { content: JSON.stringify(gapReport) },
+        { content: JSON.stringify({ ast: validReplacement }) },
+      ]);
+
+      const result = await runEnginePipeline({
+        brief: 'Update blueprint',
+        sourceFilePath: blueprintPath,
+        outputFilePath: outFile,
+        clientOverride,
+      });
+
+      expect(result.success).toBe(true);
+
+      const outputCode = await fs.readFile(outFile, 'utf-8');
+      expect(outputCode).toContain('async function myFunc()');
+      expect(outputCode).toContain('console.log("updated")');
+
+      const verification = await verifyTypeScriptCode(outputCode, process.cwd());
+      expect(verification.success).toBe(true);
+    });
+  });
 });

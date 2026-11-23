@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { ASTNode } from './schemas.js';
+import { ASTNode, ModuleContainer, AsyncFunctionBlock } from './schemas.js';
 import { requestAstGeneration, requestAstCorrection } from './client/ai_client.js';
 import { parseTypeScriptFile } from './ingestion/parser.js';
 import { analyzeCodeGaps, extractTargetSubgraphs } from './ingestion/gap_analyzer.js';
@@ -20,6 +20,71 @@ export interface EnginePipelineOptions {
   maxRetries?: number;
   auditOnly?: boolean;
   clientOverride?: any;
+}
+
+let nodeIdCounter = 0;
+
+function generateNodeId(): string {
+  nodeIdCounter += 1;
+  return `node_${nodeIdCounter}`;
+}
+
+function resetNodeIdCounter(): void {
+  nodeIdCounter = 0;
+}
+
+function remapNodeIds(node: ASTNode, idMap: Map<string, string> = new Map()): ASTNode {
+  const oldId = node.id;
+  const newId = generateNodeId();
+  idMap.set(oldId, newId);
+
+  const newNode: ASTNode = { ...node, id: newId };
+
+  const childKeys = [
+    'children',
+    'body',
+    'tryBranch',
+    'catchBranch',
+    'trueBranch',
+    'falseBranch',
+    'callbackBody',
+  ] as const;
+
+  for (const key of childKeys) {
+    if (key in newNode) {
+      const children = (newNode as any)[key];
+      if (Array.isArray(children)) {
+        (newNode as any)[key] = children.map((child: ASTNode) => remapNodeIds(child, idMap));
+      }
+    }
+  }
+
+  return newNode;
+}
+
+function validateRootModuleContainer(node: ASTNode): asserts node is ModuleContainer {
+  if (node.type !== 'ModuleContainer') {
+    throw new Error(`Root AST node must be a ModuleContainer, got "${node.type}"`);
+  }
+}
+
+function validateReplacementContract(targetNode: ASTNode, replacementNode: ASTNode): void {
+  // Ensure replacement node type matches target node type for structural compatibility
+  if (targetNode.type !== replacementNode.type) {
+    throw new Error(
+      `Replacement node type "${replacementNode.type}" does not match target node type "${targetNode.type}"`
+    );
+  }
+
+  // Additional contract validation for specific node types
+  if (targetNode.type === 'AsyncFunctionBlock' && replacementNode.type === 'AsyncFunctionBlock') {
+    // Function signature should be compatible (same name, compatible params/return)
+    if (targetNode.functionName !== replacementNode.functionName) {
+      throw new Error(
+        `Function name mismatch: target "${targetNode.functionName}" vs replacement "${replacementNode.functionName}"`
+      );
+    }
+  }
 }
 
 export async function runEnginePipeline(options: EnginePipelineOptions): Promise<{ success: boolean; finalCode: string; attempts: number }> {
@@ -94,27 +159,49 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
           const subBrief = actionItem.specificationForMutation || actionItem.reasoning;
           const contextJson = subgraphs.has(actionItem.targetNodeId) ? JSON.stringify(subgraphs.get(actionItem.targetNodeId)) : undefined;
           const newNode = await requestAstGeneration(subBrief, contextJson, options.clientOverride);
+          
+          // Remap IDs to avoid collisions with existing tree
+          resetNodeIdCounter();
+          const remappedNode = remapNodeIds(newNode);
+          
+          // Validate replacement contract
+          const targetNode = subgraphs.get(actionItem.targetNodeId);
+          if (targetNode) {
+            validateReplacementContract(targetNode, remappedNode);
+          }
+          
           patches.push({
             action: 'REPLACE',
             targetNodeId: actionItem.targetNodeId,
-            newNode,
+            newNode: remappedNode,
           });
         } else if (actionItem.resolution === 'SPAWN_NEW') {
           const subBrief = actionItem.specificationForMutation || actionItem.reasoning;
           const newNode = await requestAstGeneration(subBrief, undefined, options.clientOverride);
+          
+          // Remap IDs to avoid collisions
+          resetNodeIdCounter();
+          const remappedNode = remapNodeIds(newNode);
+          
           patches.push({
             action: 'APPEND_TO_MODULE',
-            newNode,
+            newNode: remappedNode,
           });
         }
       }
 
       currentAst = applyAtomicPatches(rootAst, patches);
     } else {
-      currentAst = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
+      const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
+      validateRootModuleContainer(newNode);
+      resetNodeIdCounter();
+      currentAst = remapNodeIds(newNode);
     }
   } else {
-    currentAst = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
+    const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
+    validateRootModuleContainer(newNode);
+    resetNodeIdCounter();
+    currentAst = remapNodeIds(newNode);
   }
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -136,6 +223,9 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
 
     if (attempt < maxRetries) {
       currentAst = await requestAstCorrection(currentAst, verification.errors, options.clientOverride);
+      validateRootModuleContainer(currentAst);
+      resetNodeIdCounter();
+      currentAst = remapNodeIds(currentAst);
     } else {
       throw new Error(`Compiler guard failed after ${maxRetries} attempts:\n${verification.errors.join('\n')}`);
     }

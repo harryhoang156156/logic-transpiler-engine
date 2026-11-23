@@ -81,6 +81,26 @@ function replaceNodeInTree(
   return false;
 }
 
+function validateUniqueIds(node: ASTNode, seen: Set<string> = new Set()): void {
+  if (seen.has(node.id)) {
+    throw new Error(`Duplicate node ID detected in merged AST: "${node.id}"`);
+  }
+  seen.add(node.id);
+
+  for (const key of CHILD_ARRAY_KEYS) {
+    if (key in node) {
+      const children = (node as any)[key];
+      if (Array.isArray(children)) {
+        for (const child of children) {
+          if (child && typeof child === 'object' && 'id' in child) {
+            validateUniqueIds(child as ASTNode, seen);
+          }
+        }
+      }
+    }
+  }
+}
+
 export function applyAtomicPatches(
   rootAst: ASTNode,
   operations: AtomicPatchOperation[]
@@ -97,6 +117,39 @@ export function applyAtomicPatches(
   collectNodeIds(clonedAst, existingIds);
 
   const seenTargets = new Set<string>();
+
+  // Collect all REPLACE target paths to detect ancestor/descendant conflicts
+  const replaceTargets = operations
+    .filter((op): op is AtomicPatchOperation & { targetNodeId: string } => op.action === 'REPLACE' && !!op.targetNodeId)
+    .map(op => ({
+      targetNodeId: op.targetNodeId,
+      path: findNodePath(clonedAst, op.targetNodeId!),
+    }))
+    .filter(item => item.path !== null);
+
+  // Check for ancestor/descendant conflicts among REPLACE targets
+  for (let i = 0; i < replaceTargets.length; i++) {
+    for (let j = i + 1; j < replaceTargets.length; j++) {
+      const pathA = replaceTargets[i].path!;
+      const pathB = replaceTargets[j].path!;
+      // Check if one path is a prefix of the other (ancestor/descendant)
+      const minLen = Math.min(pathA.length, pathB.length);
+      let isPrefix = true;
+      for (let k = 0; k < minLen; k++) {
+        if (pathA[k].id !== pathB[k].id) {
+          isPrefix = false;
+          break;
+        }
+      }
+      if (isPrefix) {
+        throw new Error(
+          `Overlapping REPLACE targets detected: "${replaceTargets[i].targetNodeId}" ` +
+          `is an ancestor/descendant of "${replaceTargets[j].targetNodeId}". ` +
+          `Cannot safely apply both replacements.`
+        );
+      }
+    }
+  }
 
   for (const op of operations) {
     if (op.action === 'REPLACE') {
@@ -149,6 +202,9 @@ export function applyAtomicPatches(
       (clonedAst as any).children.push(clonedNewNode);
     }
   }
+
+  // Validate unique IDs across the entire merged tree
+  validateUniqueIds(clonedAst);
 
   return ASTNodeSchema.parse(clonedAst);
 }
