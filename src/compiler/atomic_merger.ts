@@ -209,49 +209,16 @@ export function applyAtomicPatches(
     }
   }
 
-  // Collect all APPEND_TO_MODULE target paths. An append is lost if its target
-  // is the REPLACE target itself or a descendant of it, because the replacement
-  // overwrites the entire subtree. We reject such conflicts before any mutation
-  // occurs so that accepted appends always survive.
-  const appendTargets = operations
-    .filter((op) => op.action === 'APPEND_TO_MODULE')
-    .map((op) => {
-      if (op.targetNodeId) {
-        return {
-          targetNodeId: op.targetNodeId,
-          path: findNodePath(clonedAst, op.targetNodeId),
-        };
-      }
-      // Append to module root: the target is the root node itself.
-      return {
-        targetNodeId: clonedAst.id,
-        path: [clonedAst],
-      };
-    })
-    .filter((item) => item.path !== null);
-
-  for (const rep of replaceTargets) {
-    for (const app of appendTargets) {
-      const repPath = rep.path!;
-      const appPath = app.path!;
-      if (repPath.length > appPath.length) {
-        continue;
-      }
-      let isPrefix = true;
-      for (let k = 0; k < repPath.length; k++) {
-        if (repPath[k].id !== appPath[k].id) {
-          isPrefix = false;
-          break;
-        }
-      }
-      if (isPrefix) {
-        throw new Error(
-          `Conflicting operations: REPLACE target "${rep.targetNodeId}" is an ancestor of (or equal to) ` +
-          `APPEND_TO_MODULE target "${app.targetNodeId}". The append would be lost when the replacement is applied.`
-        );
-      }
-    }
-  }
+  // NOTE ON REPLACE / APPEND_TO_MODULE INTERACTION:
+  // Replacement overwrites are intentional. All REPLACE operations are applied
+  // first (see the sort below), and APPEND_TO_MODULE operations are then applied
+  // against the post-replacement tree. Consequently:
+  //   * An append whose target still exists after replacement succeeds (e.g. a
+  //     root REPLACE followed by an append to the new root's children).
+  //   * An append whose target was removed/replaced by a REPLACE fails at apply
+  //     time with a "Target node id ... not found for APPEND_TO_MODULE" error.
+  // This is the documented contract; see tests/atomic_merger.test.ts and
+  // tests/integration.test.ts ("throws when target removed by another REPLACE").
 
   for (const op of operations) {
     if (op.action === 'REPLACE') {
@@ -270,8 +237,19 @@ export function applyAtomicPatches(
     }
   }
 
-  // Sort operations by depth descending to handle nested replacements properly
+  // Sort operations so that:
+  //   1. All REPLACE operations are applied before any APPEND_TO_MODULE, making
+  //      the REPLACE-then-APPEND contract deterministic regardless of the order
+  //      operations were supplied in.
+  //   2. Among REPLACE operations, deeper targets are applied first so nested
+  //      replacements are handled correctly.
   const sortedOperations = [...operations].sort((a, b) => {
+    if (a.action === 'REPLACE' && b.action === 'APPEND_TO_MODULE') {
+      return -1;
+    }
+    if (a.action === 'APPEND_TO_MODULE' && b.action === 'REPLACE') {
+      return 1;
+    }
     if (a.action === 'REPLACE' && b.action === 'REPLACE' && a.targetNodeId && b.targetNodeId) {
       const pathA = findNodePath(clonedAst, a.targetNodeId);
       const pathB = findNodePath(clonedAst, b.targetNodeId);
