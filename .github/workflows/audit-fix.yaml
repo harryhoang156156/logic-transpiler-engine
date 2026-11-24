@@ -26,8 +26,10 @@ jobs:
           if [ -n "${{ github.event.inputs.package_to_upgrade }}" ]; then
             npm install "${{ github.event.inputs.package_to_upgrade }}"
           else
-            npm audit fix
+            npm audit fix || true
           fi
+          echo "=== Remaining Production-Only Vulnerabilities ==="
+          npm audit --omit=dev || true
 
       - name: Verify Build & Tests
         id: verify
