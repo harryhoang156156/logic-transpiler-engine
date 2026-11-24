@@ -209,6 +209,50 @@ export function applyAtomicPatches(
     }
   }
 
+  // Collect all APPEND_TO_MODULE target paths. An append is lost if its target
+  // is the REPLACE target itself or a descendant of it, because the replacement
+  // overwrites the entire subtree. We reject such conflicts before any mutation
+  // occurs so that accepted appends always survive.
+  const appendTargets = operations
+    .filter((op) => op.action === 'APPEND_TO_MODULE')
+    .map((op) => {
+      if (op.targetNodeId) {
+        return {
+          targetNodeId: op.targetNodeId,
+          path: findNodePath(clonedAst, op.targetNodeId),
+        };
+      }
+      // Append to module root: the target is the root node itself.
+      return {
+        targetNodeId: clonedAst.id,
+        path: [clonedAst],
+      };
+    })
+    .filter((item) => item.path !== null);
+
+  for (const rep of replaceTargets) {
+    for (const app of appendTargets) {
+      const repPath = rep.path!;
+      const appPath = app.path!;
+      if (repPath.length > appPath.length) {
+        continue;
+      }
+      let isPrefix = true;
+      for (let k = 0; k < repPath.length; k++) {
+        if (repPath[k].id !== appPath[k].id) {
+          isPrefix = false;
+          break;
+        }
+      }
+      if (isPrefix) {
+        throw new Error(
+          `Conflicting operations: REPLACE target "${rep.targetNodeId}" is an ancestor of (or equal to) ` +
+          `APPEND_TO_MODULE target "${app.targetNodeId}". The append would be lost when the replacement is applied.`
+        );
+      }
+    }
+  }
+
   for (const op of operations) {
     if (op.action === 'REPLACE') {
       if (!op.targetNodeId) {

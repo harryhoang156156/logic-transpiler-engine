@@ -52,10 +52,21 @@ function createOpenAIClient(baseURL: string, apiKey: string): OpenAI {
 }
 
 /**
+ * Internal marker used to remember that a property was originally optional.
+ * It is stripped from the schema before it is sent to the LLM provider and is
+ * only consulted by `stripNulls` when normalizing the model's response.
+ */
+const OPTIONAL_MARKER = 'x-optional';
+
+/**
  * Recursively rewrites a JSON Schema so it satisfies OpenAI Structured Outputs
  * requirements: every object lists all of its properties in `required`,
  * disallows additional properties, and optional properties are expressed as
  * nullable so the model can emit `null` for them.
+ *
+ * Optional properties are tagged with `OPTIONAL_MARKER` so that `stripNulls`
+ * can distinguish them from required-but-nullable properties (which also
+ * contain a `null` branch but must keep their `null` values).
  */
 function enforceStrictJsonSchema(node: any): any {
   if (Array.isArray(node)) {
@@ -113,8 +124,12 @@ function enforceStrictJsonSchema(node: any): any {
       if (originalRequired.includes(key)) {
         strictProps[key] = propSchema;
       } else {
-        // Wrap optional property in anyOf with null
-        strictProps[key] = { anyOf: [propSchema, { type: 'null' }] };
+        // Wrap optional property in anyOf with null and tag it so that
+        // stripNulls can tell it apart from a required nullable property.
+        strictProps[key] = {
+          anyOf: [propSchema, { type: 'null' }],
+          [OPTIONAL_MARKER]: true,
+        };
       }
     }
     result.properties = strictProps;
@@ -122,6 +137,27 @@ function enforceStrictJsonSchema(node: any): any {
     result.additionalProperties = false;
   }
 
+  return result;
+}
+
+/**
+ * Recursively removes the internal `OPTIONAL_MARKER` key from a schema so it
+ * can be sent to the LLM provider without leaking implementation details.
+ */
+function stripMarkers(node: any): any {
+  if (Array.isArray(node)) {
+    return node.map((item) => stripMarkers(item));
+  }
+  if (node === null || typeof node !== 'object') {
+    return node;
+  }
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === OPTIONAL_MARKER) {
+      continue;
+    }
+    result[key] = stripMarkers(value);
+  }
   return result;
 }
 
@@ -214,6 +250,9 @@ function resolveRef(ref: string, rootSchema: any): any {
  * Also traverses into anyOf union branches to normalize nested nullable fields.
  * For discriminated unions (anyOf with multiple non-null branches), matches the
  * value against each branch before normalizing, preserving required nullable fields.
+ *
+ * Only properties tagged with `OPTIONAL_MARKER` are treated as optional; a
+ * required-but-nullable property also has a `null` branch but keeps its value.
  */
 function stripNulls(value: any, schema: any, rootSchema: any): any {
   if (value === null || value === undefined) {
@@ -254,7 +293,10 @@ function stripNulls(value: any, schema: any, rootSchema: any): any {
           (b: any) => b.type === 'null'
         );
         if (hasNullBranch) {
-          isOptionalWrapper = true;
+          // Only strip nulls for properties that were originally optional.
+          // Required-but-nullable properties also have a null branch but must
+          // keep their null values.
+          isOptionalWrapper = resolvedPropSchema[OPTIONAL_MARKER] === true;
           const nonNullBranches = resolvedPropSchema.anyOf.filter(
             (b: any) => b.type !== 'null'
           );
@@ -347,7 +389,10 @@ export async function generateStructuredOutput<T>({
 
   const client = clientOverride ?? createOpenAIClient(baseURL, apiKey);
 
-  const { schema: jsonSchema, strict } = toStrictJsonSchema(schema);
+  const { schema: markedSchema, strict } = toStrictJsonSchema(schema);
+  // Strip internal optionality markers before sending the schema to the
+  // provider; keep the marked schema for response normalization.
+  const openAiSchema = strict ? stripMarkers(markedSchema) : markedSchema;
 
   const response = await client.chat.completions.create({
     model: finalModel,
@@ -359,7 +404,7 @@ export async function generateStructuredOutput<T>({
       type: 'json_schema',
       json_schema: {
         name: 'ast_output',
-        schema: jsonSchema,
+        schema: openAiSchema,
         strict,
       },
     },
@@ -377,7 +422,7 @@ export async function generateStructuredOutput<T>({
     return schema.parse(parsed);
   }
 
-  const stripped = stripNulls(parsed, jsonSchema, jsonSchema);
+  const stripped = stripNulls(parsed, markedSchema, markedSchema);
   return schema.parse(stripped);
 }
 
