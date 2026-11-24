@@ -52,10 +52,21 @@ function createOpenAIClient(baseURL: string, apiKey: string): OpenAI {
 }
 
 /**
+ * Internal marker used to remember that a property was originally optional.
+ * It is stripped from the schema before it is sent to the LLM provider and is
+ * only consulted by `stripNulls` when normalizing the model's response.
+ */
+const OPTIONAL_MARKER = 'x-optional';
+
+/**
  * Recursively rewrites a JSON Schema so it satisfies OpenAI Structured Outputs
  * requirements: every object lists all of its properties in `required`,
  * disallows additional properties, and optional properties are expressed as
  * nullable so the model can emit `null` for them.
+ *
+ * Optional properties are tagged with `OPTIONAL_MARKER` so that `stripNulls`
+ * can distinguish them from required-but-nullable properties (which also
+ * contain a `null` branch but must keep their `null` values).
  */
 function enforceStrictJsonSchema(node: any): any {
   if (Array.isArray(node)) {
@@ -113,8 +124,12 @@ function enforceStrictJsonSchema(node: any): any {
       if (originalRequired.includes(key)) {
         strictProps[key] = propSchema;
       } else {
-        // Wrap optional property in anyOf with null
-        strictProps[key] = { anyOf: [propSchema, { type: 'null' }] };
+        // Wrap optional property in anyOf with null and tag it so that
+        // stripNulls can tell it apart from a required nullable property.
+        strictProps[key] = {
+          anyOf: [propSchema, { type: 'null' }],
+          [OPTIONAL_MARKER]: true,
+        };
       }
     }
     result.properties = strictProps;
@@ -122,6 +137,51 @@ function enforceStrictJsonSchema(node: any): any {
     result.additionalProperties = false;
   }
 
+  return result;
+}
+
+/**
+ * Recursively removes the internal `OPTIONAL_MARKER` key from a schema so it
+ * can be sent to the LLM provider without leaking implementation details.
+ *
+ * The marker is only ever attached to schema nodes (as a sibling of `anyOf`).
+ * Keys inside `properties`, `definitions`, and `$defs` maps are
+ * application-defined names, not schema keywords, so they must be preserved
+ * verbatim — otherwise a property literally named `x-optional` would be
+ * dropped from `properties` while remaining in `required` and
+ * `additionalProperties: false`, producing an inconsistent schema.
+ */
+function stripMarkers(node: any): any {
+  if (Array.isArray(node)) {
+    return node.map((item) => stripMarkers(item));
+  }
+  if (node === null || typeof node !== 'object') {
+    return node;
+  }
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (key === OPTIONAL_MARKER) {
+      continue;
+    }
+    if (
+      (key === 'properties' || key === 'definitions' || key === '$defs') &&
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      // Preserve application-defined names (property/definition keys) as-is;
+      // only recurse into their schema values.
+      const map: Record<string, any> = {};
+      for (const [name, subSchema] of Object.entries(
+        value as Record<string, any>
+      )) {
+        map[name] = stripMarkers(subSchema);
+      }
+      result[key] = map;
+    } else {
+      result[key] = stripMarkers(value);
+    }
+  }
   return result;
 }
 
@@ -179,6 +239,10 @@ function hasUnsupportedKeywords(node: any): boolean {
 
 function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any>; strict: boolean } {
   const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' }) as Record<string, any>;
+  
+  // Strip root $schema metadata as required by OpenAI structured outputs
+  delete jsonSchema.$schema;
+  
   const unsupported = hasUnsupportedKeywords(jsonSchema);
   if (unsupported) {
     // Return the original converted schema; strict rewriting and null
@@ -207,6 +271,12 @@ function resolveRef(ref: string, rootSchema: any): any {
  * Recursively removes `null` values from parsed LLM output for properties
  * that were made nullable during strict-schema conversion (optional properties).
  * Uses the strict schema structure and resolves $ref recursively at every depth.
+ * Also traverses into anyOf union branches to normalize nested nullable fields.
+ * For discriminated unions (anyOf with multiple non-null branches), matches the
+ * value against each branch before normalizing, preserving required nullable fields.
+ *
+ * Only properties tagged with `OPTIONAL_MARKER` are treated as optional; a
+ * required-but-nullable property also has a `null` branch but keeps its value.
  */
 function stripNulls(value: any, schema: any, rootSchema: any): any {
   if (value === null || value === undefined) {
@@ -247,7 +317,10 @@ function stripNulls(value: any, schema: any, rootSchema: any): any {
           (b: any) => b.type === 'null'
         );
         if (hasNullBranch) {
-          isOptionalWrapper = true;
+          // Only strip nulls for properties that were originally optional.
+          // Required-but-nullable properties also have a null branch but must
+          // keep their null values.
+          isOptionalWrapper = resolvedPropSchema[OPTIONAL_MARKER] === true;
           const nonNullBranches = resolvedPropSchema.anyOf.filter(
             (b: any) => b.type !== 'null'
           );
@@ -266,6 +339,51 @@ function stripNulls(value: any, schema: any, rootSchema: any): any {
       result[key] = stripNulls(val, nonNullSubSchema, rootSchema);
     }
     return result;
+  }
+
+  // Handle anyOf unions (discriminated unions or other unions)
+  if (schema.anyOf && Array.isArray(schema.anyOf)) {
+    // For optional wrapper (has null branch), we already handled above in properties context
+    // Here we handle top-level anyOf or nested anyOf without null branch
+    const hasNullBranch = schema.anyOf.some((b: any) => b.type === 'null');
+    if (hasNullBranch) {
+      // This is an optional wrapper at non-property level - try each non-null branch
+      const nonNullBranches = schema.anyOf.filter((b: any) => b.type !== 'null');
+      for (const branchSchema of nonNullBranches) {
+        const stripped = stripNulls(value, branchSchema, rootSchema);
+        // Check if the branch schema matches (has properties or is object type)
+        if (branchSchema.properties || branchSchema.type === 'object') {
+          return stripped;
+        }
+      }
+      return value;
+    } else {
+      // Discriminated union or other union without null - match value against each branch
+      // Try each branch and use the first one that validates successfully
+      for (const branchSchema of schema.anyOf) {
+        try {
+          // Create a temporary Zod schema from the branch to validate
+          // We use a simple heuristic: if the branch has a discriminant property, check it
+          const stripped = stripNulls(value, branchSchema, rootSchema);
+          // If branch has properties, assume it's a match if value has those properties
+          if (branchSchema.properties) {
+            const branchProps = Object.keys(branchSchema.properties);
+            const valueProps = value && typeof value === 'object' ? Object.keys(value) : [];
+            const hasAllRequired = branchSchema.required?.every((r: string) => valueProps.includes(r)) ?? true;
+            if (hasAllRequired && branchProps.some((p: string) => valueProps.includes(p))) {
+              return stripped;
+            }
+          } else if (branchSchema.type === 'object' || branchSchema.type === undefined) {
+            // Generic object branch - accept it
+            return stripped;
+          }
+        } catch {
+          // Branch didn't match, try next
+          continue;
+        }
+      }
+      return value;
+    }
   }
 
   return value;
@@ -295,7 +413,10 @@ export async function generateStructuredOutput<T>({
 
   const client = clientOverride ?? createOpenAIClient(baseURL, apiKey);
 
-  const { schema: jsonSchema, strict } = toStrictJsonSchema(schema);
+  const { schema: markedSchema, strict } = toStrictJsonSchema(schema);
+  // Strip internal optionality markers before sending the schema to the
+  // provider; keep the marked schema for response normalization.
+  const openAiSchema = strict ? stripMarkers(markedSchema) : markedSchema;
 
   const response = await client.chat.completions.create({
     model: finalModel,
@@ -307,7 +428,7 @@ export async function generateStructuredOutput<T>({
       type: 'json_schema',
       json_schema: {
         name: 'ast_output',
-        schema: jsonSchema,
+        schema: openAiSchema,
         strict,
       },
     },
@@ -325,7 +446,7 @@ export async function generateStructuredOutput<T>({
     return schema.parse(parsed);
   }
 
-  const stripped = stripNulls(parsed, jsonSchema, jsonSchema);
+  const stripped = stripNulls(parsed, markedSchema, markedSchema);
   return schema.parse(stripped);
 }
 

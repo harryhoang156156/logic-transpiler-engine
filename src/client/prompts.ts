@@ -19,3 +19,4 @@ export function buildAuditPrompt(existingAstJson: string, featureBrief: string):
 export function buildCorrectionPrompt(brokenAstJson: string, compilerErrors: string[]): string {
   return SYSTEM_PROMPT_DEBUGGER + '\n\nBroken AST:\n' + brokenAstJson + '\n\nCompiler Errors:\n' + compilerErrors.join('\n');
 }
+

@@ -221,3 +221,4 @@ export function emitTypeScript(node: ASTNode, indentLevel: number = 0, includeHe
       return '';
   }
 }
+
