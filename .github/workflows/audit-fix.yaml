@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       package_to_upgrade:
-        description: 'Optional: Single package@latest to upgrade (leave blank for safe npm audit fix)'
+        description: 'Optional: Package(s)@latest to upgrade (leave blank for safe npm audit fix)'
         required: false
         default: ''
 
@@ -22,9 +22,11 @@ jobs:
           cache: 'npm'
 
       - name: Run Audit Fix or Single Package Upgrade
+        env:
+          PACKAGES: ${{ github.event.inputs.package_to_upgrade }}
         run: |
-          if [ -n ${{ github.event.inputs.package_to_upgrade }} ]; then
-            npm install "${{ github.event.inputs.package_to_upgrade }}"
+          if [ -n "$PACKAGES" ]; then
+            npm install --legacy-peer-deps $PACKAGES
           else
             npm audit fix || true
           fi
