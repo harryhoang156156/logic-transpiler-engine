@@ -10,6 +10,7 @@ import { analyzeCodeGaps, extractTargetSubgraphs } from './ingestion/gap_analyze
 import { emitTypeScript } from './compiler/ts_emitter.js';
 import { applyAtomicPatches, AtomicPatchOperation } from './compiler/atomic_merger.js';
 import { verifyTypeScriptCode } from './verification/compiler_guard.js';
+import { collectNodeIds, generateNodeId, resetIdCounter } from './utils/ast.js';
 
 export interface EnginePipelineOptions {
   brief?: string;
@@ -20,43 +21,6 @@ export interface EnginePipelineOptions {
   maxRetries?: number;
   auditOnly?: boolean;
   clientOverride?: any;
-}
-
-function generateNodeId(existingIds: Set<string>): string {
-  let counter = 1;
-  let id = `node_${counter}`;
-  while (existingIds.has(id)) {
-    counter++;
-    id = `node_${counter}`;
-  }
-  existingIds.add(id);
-  return id;
-}
-
-function collectExistingIds(node: ASTNode, ids: Set<string>): void {
-  ids.add(node.id);
-  const childKeys = [
-    'children',
-    'body',
-    'tryBranch',
-    'catchBranch',
-    'trueBranch',
-    'falseBranch',
-    'callbackBody',
-  ] as const;
-
-  for (const key of childKeys) {
-    if (key in node) {
-      const children = (node as any)[key];
-      if (Array.isArray(children)) {
-        for (const child of children) {
-          if (child && typeof child === 'object' && 'id' in child) {
-            collectExistingIds(child as ASTNode, ids);
-          }
-        }
-      }
-    }
-  }
 }
 
 function remapNodeIds(node: ASTNode, existingIds: Set<string>): ASTNode {
@@ -177,7 +141,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
 
       // Collect existing IDs from rootAst to avoid conflicts
       const existingIds = new Set<string>();
-      collectExistingIds(rootAst, existingIds);
+      collectNodeIds(rootAst, existingIds);
 
       for (const actionItem of report.actions) {
         if (actionItem.resolution === 'KEEP_AS_IS') {
@@ -220,12 +184,14 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
       const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
       validateRootModuleContainer(newNode);
       const existingIds = new Set<string>();
+      resetIdCounter();
       currentAst = remapNodeIds(newNode, existingIds);
     }
   } else {
     const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
     validateRootModuleContainer(newNode);
     const existingIds = new Set<string>();
+    resetIdCounter();
     currentAst = remapNodeIds(newNode, existingIds);
   }
 
@@ -250,6 +216,7 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
       currentAst = await requestAstCorrection(currentAst, verification.errors, options.clientOverride);
       validateRootModuleContainer(currentAst);
       const existingIds = new Set<string>();
+      resetIdCounter();
       currentAst = remapNodeIds(currentAst, existingIds);
     } else {
       throw new Error(`Compiler guard failed after ${maxRetries} attempts:\n${verification.errors.join('\n')}`);
@@ -301,4 +268,3 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       process.exit(1);
     });
 }
-

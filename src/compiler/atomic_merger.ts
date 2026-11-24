@@ -3,6 +3,7 @@ import { ASTNode, ASTNodeSchema } from '../schemas.js';
 export interface AtomicPatchOperation {
   action: 'REPLACE' | 'APPEND_TO_MODULE';
   targetNodeId?: string; // Required for REPLACE, optional for APPEND_TO_MODULE (nested placement)
+  targetKey?: string; // Optional: specific child array key to append to (e.g., 'body', 'tryBranch', 'catchBranch')
   newNode: ASTNode;
 }
 
@@ -121,34 +122,34 @@ function validateUniqueIds(node: ASTNode, seen: Set<string> = new Set()): void {
   }
 }
 
-function getAppendTargetArray(parent: ASTNode, parentKey: string | null): ASTNode[] | null {
-  // Determine which child array to append to based on parent node type and key
-  if (parentKey) {
-    // If we know the specific key (e.g., 'body', 'children'), use it
-    if (parentKey in parent) {
-      const arr = (parent as any)[parentKey];
+function getAppendTargetArray(node: ASTNode, targetKey?: string): ASTNode[] | null {
+  // If explicit targetKey is provided, use it
+  if (targetKey) {
+    if (targetKey in node) {
+      const arr = (node as any)[targetKey];
       if (Array.isArray(arr)) {
         return arr;
       }
     }
+    return null;
   }
-  
-  // Fallback: determine appropriate array based on node type
-  switch (parent.type) {
+
+  // Determine appropriate array based on node type
+  switch (node.type) {
     case 'ModuleContainer':
-      return parent.children;
+      return node.children;
     case 'AsyncFunctionBlock':
-      return parent.body;
+      return node.body;
     case 'TryCatchGuardian':
       // Default to tryBranch for try-catch
-      return parent.tryBranch;
+      return node.tryBranch;
     case 'ConditionalBranch':
       // Default to trueBranch for conditionals
-      return parent.trueBranch;
+      return node.trueBranch;
     case 'LoopInterval':
-      return parent.body;
+      return node.body;
     case 'Solana_ListenPumpFun':
-      return parent.callbackBody;
+      return node.callbackBody;
     default:
       return null;
   }
@@ -183,6 +184,10 @@ export function applyAtomicPatches(
   // Check for ancestor/descendant conflicts among REPLACE targets
   for (let i = 0; i < replaceTargets.length; i++) {
     for (let j = i + 1; j < replaceTargets.length; j++) {
+      // Skip pairs with identical targetNodeId - they'll be caught by the duplicate check below
+      if (replaceTargets[i].targetNodeId === replaceTargets[j].targetNodeId) {
+        continue;
+      }
       const pathA = replaceTargets[i].path!;
       const pathB = replaceTargets[j].path!;
       // Check if one path is a prefix of the other (ancestor/descendant)
@@ -250,12 +255,13 @@ export function applyAtomicPatches(
       let targetArray: ASTNode[] | null = null;
       
       if (op.targetNodeId) {
-        // Find the target node and determine which child array to append to
+        // Find the target node
         const found = findNodeAndParent(clonedAst, op.targetNodeId);
         if (!found) {
           throw new Error(`Target node id "${op.targetNodeId}" not found for APPEND_TO_MODULE.`);
         }
-        targetArray = getAppendTargetArray(found.node, found.parentKey);
+        // Use targetKey if provided, otherwise determine from node type
+        targetArray = getAppendTargetArray(found.node, op.targetKey);
         if (!targetArray) {
           throw new Error(`Node "${op.targetNodeId}" (type: ${found.node.type}) does not have a valid child array to append to.`);
         }

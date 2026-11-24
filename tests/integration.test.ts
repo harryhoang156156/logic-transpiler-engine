@@ -497,7 +497,7 @@ describe('integration', () => {
         timeoutMs,
       });
       // If we get here, the process exited before the timeout, which is a test failure.
-      throw new Error('Subprocess exited before timeout; expected timeout rejection');
+      throw new Error('Subprocess exited before the timeout; expected timeout rejection');
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toContain('timed out');
@@ -676,6 +676,55 @@ describe('integration', () => {
       const result = applyAtomicPatches(rootAst, operations);
       expect(result.children).toHaveLength(2);
     });
+
+    it('allows duplicate REPLACE target IDs to reach duplicate check', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+        ],
+      };
+
+      const replacementFunc1: AsyncFunctionBlock = {
+        id: 'new_func1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const replacementFunc2: AsyncFunctionBlock = {
+        id: 'new_func2',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc1 },
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc2 },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Duplicate replacement target node id "func1" found/
+      );
+    });
   });
 
   describe('atomic_merger unique ID validation', () => {
@@ -783,7 +832,7 @@ describe('integration', () => {
       const dir = await makeTempDir();
       const outFile = path.join(dir, 'bot.ts');
 
-      // AST with duplicate IDs (simulating LLM output)
+      // AST with duplicate IDs (simulating LLM output) - using Solana nodes as specified
       const greenfieldAst: ASTNode = {
         id: 'node_1',
         type: 'ModuleContainer',
@@ -800,8 +849,29 @@ describe('integration', () => {
             body: [
               {
                 id: 'node_1', // Duplicate again!
+                type: 'Solana_EstablishConnection',
+                connectionVarName: 'connection',
+                rpcEnvVar: 'RPC_URL',
+                commitment: 'confirmed',
+              },
+              {
+                id: 'node_1', // Duplicate again!
                 type: 'ExpressionBlock',
-                codeSnippet: 'console.log("test")',
+                codeSnippet: 'const transaction = new Transaction()',
+              },
+              {
+                id: 'node_1', // Duplicate again!
+                type: 'Solana_SimulatePayload',
+                connectionVarName: 'connection',
+                transactionVarName: 'transaction',
+                throwOnError: true,
+              },
+              {
+                id: 'node_1', // Duplicate again!
+                type: 'Solana_SimulatePayload',
+                connectionVarName: 'connection',
+                transactionVarName: 'transaction',
+                throwOnError: false,
               },
             ],
           },
@@ -819,10 +889,12 @@ describe('integration', () => {
       });
 
       expect(result.success).toBe(true);
+      expect(result.attempts).toBe(1);
 
       const writtenCode = await fs.readFile(outFile, 'utf-8');
       const verification = await verifyTypeScriptCode(writtenCode, process.cwd());
       expect(verification.success).toBe(true);
+      expect(verification.errors).toEqual([]);
     });
 
     it('remaps node IDs in mutation/spawn operations', async () => {
@@ -1199,6 +1271,347 @@ describe('integration', () => {
 
       const verification = await verifyTypeScriptCode(outputCode, process.cwd());
       expect(verification.success).toBe(true);
+    });
+  });
+
+  // --- New focused tests for APPEND_TO_MODULE ---
+
+  describe('atomic_merger APPEND_TO_MODULE', () => {
+    it('appends to AsyncFunctionBlock body', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'expr1',
+                type: 'ExpressionBlock',
+                codeSnippet: 'console.log("existing")',
+              },
+            ],
+          },
+        ],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', targetNodeId: 'func1', newNode: newExpr },
+      ];
+
+      const result = applyAtomicPatches(rootAst, operations);
+      const func = result.children[0] as AsyncFunctionBlock;
+      expect(func.body).toHaveLength(2);
+      expect((func.body[1] as any).codeSnippet).toBe('console.log("appended")');
+    });
+
+    it('throws on missing target ID for APPEND_TO_MODULE', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', targetNodeId: 'nonexistent', newNode: newExpr },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Target node id "nonexistent" not found for APPEND_TO_MODULE/
+      );
+    });
+
+    it('throws when appending to leaf ExpressionBlock', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'expr1',
+                type: 'ExpressionBlock',
+                codeSnippet: 'console.log("leaf")',
+              },
+            ],
+          },
+        ],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', targetNodeId: 'expr1', newNode: newExpr },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /does not have a valid child array to append to/
+      );
+    });
+
+    it('throws when target removed by another REPLACE', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+          {
+            id: 'func2',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func2',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+        ],
+      };
+
+      const replacementFunc: AsyncFunctionBlock = {
+        id: 'new_func1',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'REPLACE', targetNodeId: 'func1', newNode: replacementFunc },
+        { action: 'APPEND_TO_MODULE', targetNodeId: 'func1', newNode: newExpr },
+      ];
+
+      // REPLACE happens first (deeper path), then APPEND tries to find func1 which was replaced
+      // The new func1 has a different ID, so the target is not found
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Target node id "func1" not found for APPEND_TO_MODULE/
+      );
+    });
+
+    it('appends to TryCatchGuardian tryBranch by default', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'try1',
+                type: 'TryCatchGuardian',
+                tryBranch: [
+                  {
+                    id: 'expr1',
+                    type: 'ExpressionBlock',
+                    codeSnippet: 'console.log("try")',
+                  },
+                ],
+                catchBranch: [
+                  {
+                    id: 'expr2',
+                    type: 'ExpressionBlock',
+                    codeSnippet: 'console.log("catch")',
+                  },
+                ],
+                errorVariableName: 'e',
+              },
+            ],
+          },
+        ],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended to try")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', targetNodeId: 'try1', newNode: newExpr },
+      ];
+
+      const result = applyAtomicPatches(rootAst, operations);
+      const func = result.children[0] as AsyncFunctionBlock;
+      const tryCatch = func.body[0] as any;
+      expect(tryCatch.tryBranch).toHaveLength(2);
+      expect(tryCatch.tryBranch[1].codeSnippet).toBe('console.log("appended to try")');
+    });
+
+    it('appends to TryCatchGuardian catchBranch when targetKey specified', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [
+              {
+                id: 'try1',
+                type: 'TryCatchGuardian',
+                tryBranch: [
+                  {
+                    id: 'expr1',
+                    type: 'ExpressionBlock',
+                    codeSnippet: 'console.log("try")',
+                  },
+                ],
+                catchBranch: [
+                  {
+                    id: 'expr2',
+                    type: 'ExpressionBlock',
+                    codeSnippet: 'console.log("catch")',
+                  },
+                ],
+                errorVariableName: 'e',
+              },
+            ],
+          },
+        ],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended to catch")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', targetNodeId: 'try1', targetKey: 'catchBranch', newNode: newExpr },
+      ];
+
+      const result = applyAtomicPatches(rootAst, operations);
+      const func = result.children[0] as AsyncFunctionBlock;
+      const tryCatch = func.body[0] as any;
+      expect(tryCatch.catchBranch).toHaveLength(2);
+      expect(tryCatch.catchBranch[1].codeSnippet).toBe('console.log("appended to catch")');
+    });
+
+    it('appends to ModuleContainer children when no targetNodeId', () => {
+      const rootAst: ModuleContainer = {
+        id: 'root',
+        type: 'ModuleContainer',
+        moduleName: 'test',
+        exports: [],
+        children: [
+          {
+            id: 'func1',
+            type: 'AsyncFunctionBlock',
+            functionName: 'func1',
+            parameters: [],
+            returnType: 'Promise<void>',
+            isExported: true,
+            body: [],
+          },
+        ],
+      };
+
+      const newFunc: AsyncFunctionBlock = {
+        id: 'new_func',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func2',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', newNode: newFunc },
+      ];
+
+      const result = applyAtomicPatches(rootAst, operations);
+      expect(result.children).toHaveLength(2);
+      expect((result.children[1] as AsyncFunctionBlock).functionName).toBe('func2');
+    });
+
+    it('throws when appending to non-ModuleContainer root without targetNodeId', () => {
+      const rootAst: ASTNode = {
+        id: 'root',
+        type: 'AsyncFunctionBlock',
+        functionName: 'func1',
+        parameters: [],
+        returnType: 'Promise<void>',
+        isExported: true,
+        body: [],
+      };
+
+      const newExpr: ASTNode = {
+        id: 'new_expr',
+        type: 'ExpressionBlock',
+        codeSnippet: 'console.log("appended")',
+      };
+
+      const operations: AtomicPatchOperation[] = [
+        { action: 'APPEND_TO_MODULE', newNode: newExpr },
+      ];
+
+      expect(() => applyAtomicPatches(rootAst, operations)).toThrow(
+        /Cannot append to module: root AST node type is "AsyncFunctionBlock", expected "ModuleContainer"/
+      );
     });
   });
 });
