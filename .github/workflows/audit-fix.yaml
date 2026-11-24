@@ -23,7 +23,7 @@ jobs:
 
       - name: Run Audit Fix or Single Package Upgrade
         run: |
-          if [ -n "${{ github.event.inputs.package_to_upgrade }}" ]; then
+          if [ -n ${{ github.event.inputs.package_to_upgrade }} ]; then
             npm install "${{ github.event.inputs.package_to_upgrade }}"
           else
             npm audit fix || true
