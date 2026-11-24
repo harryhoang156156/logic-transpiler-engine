@@ -143,6 +143,13 @@ function enforceStrictJsonSchema(node: any): any {
 /**
  * Recursively removes the internal `OPTIONAL_MARKER` key from a schema so it
  * can be sent to the LLM provider without leaking implementation details.
+ *
+ * The marker is only ever attached to schema nodes (as a sibling of `anyOf`).
+ * Keys inside `properties`, `definitions`, and `$defs` maps are
+ * application-defined names, not schema keywords, so they must be preserved
+ * verbatim — otherwise a property literally named `x-optional` would be
+ * dropped from `properties` while remaining in `required` and
+ * `additionalProperties: false`, producing an inconsistent schema.
  */
 function stripMarkers(node: any): any {
   if (Array.isArray(node)) {
@@ -156,7 +163,24 @@ function stripMarkers(node: any): any {
     if (key === OPTIONAL_MARKER) {
       continue;
     }
-    result[key] = stripMarkers(value);
+    if (
+      (key === 'properties' || key === 'definitions' || key === '$defs') &&
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value)
+    ) {
+      // Preserve application-defined names (property/definition keys) as-is;
+      // only recurse into their schema values.
+      const map: Record<string, any> = {};
+      for (const [name, subSchema] of Object.entries(
+        value as Record<string, any>
+      )) {
+        map[name] = stripMarkers(subSchema);
+      }
+      result[key] = map;
+    } else {
+      result[key] = stripMarkers(value);
+    }
   }
   return result;
 }
