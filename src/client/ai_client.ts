@@ -1,7 +1,6 @@
 import { config as dotenvConfig } from 'dotenv';
 import { OpenAI } from 'openai';
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { ASTNodeSchema, ASTNode } from '../schemas.js';
 import {
   SYSTEM_PROMPT_GENERATOR,
@@ -237,8 +236,10 @@ function hasUnsupportedKeywords(node: any): boolean {
   return false;
 }
 
-function toStrictJsonSchema(schema: z.ZodType<any>): { schema: Record<string, any>; strict: boolean } {
-  const jsonSchema = zodToJsonSchema(schema, { $refStrategy: 'root' }) as Record<string, any>;
+function toStrictJsonSchema(schema: z.ZodTypeAny): { schema: Record<string, any>; strict: boolean } {
+  // Zod v4 native JSON Schema conversion (replaces zod-to-json-schema)
+  // target: "draft-07" produces a schema compatible with OpenAI Structured Outputs
+  const jsonSchema = z.toJSONSchema(schema, { target: 'draft-07' }) as Record<string, any>;
   
   // Strip root $schema metadata as required by OpenAI structured outputs
   delete jsonSchema.$schema;

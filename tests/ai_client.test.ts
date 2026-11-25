@@ -225,9 +225,9 @@ describe('generateStructuredOutput', () => {
     const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
     // middleName should be in required (since it's not optional)
     expect(jsonSchema.required).toEqual(['name', 'middleName']);
-    // zod-to-json-schema represents nullable as type array
+    // Zod v4 represents nullable as anyOf with null
     expect(jsonSchema.properties.middleName).toEqual({
-      type: ['string', 'null'],
+      anyOf: [{ type: 'string' }, { type: 'null' }],
     });
   });
 
@@ -288,9 +288,7 @@ describe('generateStructuredOutput', () => {
 
   it('preserves $ref references in generated schema', async () => {
     // Test that $ref references are not expanded during strict schema conversion
-    // Note: zodToJsonSchema with $refStrategy: 'root' creates $ref for recursive types
-    // but may not create $defs/definitions in the way we expect. This test verifies
-    // that if $ref exists anywhere in the schema, it's preserved.
+    // Note: Zod v4's toJSONSchema with target: "draft-07" creates $ref for recursive types
     const schema = z.object({
       name: z.string(),
       // Self-referential type to force $ref generation
@@ -313,17 +311,17 @@ describe('generateStructuredOutput', () => {
     expect(result.children).toEqual([]);
 
     const jsonSchema = createMock.mock.calls[0][0].response_format.json_schema.schema;
-    // The schema should have $ref somewhere (in definitions, $defs, or inline)
+    // The schema should have $ref somewhere (in $defs)
     // Check that our conversion doesn't expand $ref
     const schemaStr = JSON.stringify(jsonSchema);
     // If there's a $ref in the original, it should be preserved
-    // For recursive types, zod-to-json-schema typically creates a $ref
+    // For recursive types, Zod v4 typically creates a $ref in $defs
     expect(schemaStr).toContain('$ref');
   });
 
   it('handles optional object with reused subschema', async () => {
     // Regression test: optional property that references a shared subschema
-    // Note: zodToJsonSchema inlines reused schemas by default, so we test that
+    // Note: Zod v4's toJSONSchema inlines reused schemas by default, so we test that
     // our strict conversion doesn't break the inlined schema and correctly
     // wraps the optional property in anyOf with null.
     const addressSchema = z.object({
@@ -416,7 +414,7 @@ describe('generateStructuredOutput', () => {
             items: expect.objectContaining({
               type: 'object',
               properties: expect.objectContaining({
-                id: { type: 'number' }, // zod-to-json-schema outputs 'number' for z.number()
+                id: { type: 'number' }, // Zod v4 outputs 'number' for z.number()
                 label: expect.objectContaining({
                   anyOf: expect.arrayContaining([
                     { type: 'string' },
