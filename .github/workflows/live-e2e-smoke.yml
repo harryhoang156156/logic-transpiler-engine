@@ -1,0 +1,49 @@
+name: Live E2E Engine Smoke Test
+on:
+  workflow_dispatch:
+
+jobs:
+  live-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install & Build Engine
+        run: |
+          npm ci --no-progress
+          npm run build
+
+      - name: Inspect CLI Help & Flags
+        run: node dist/main.js --help || true
+
+      - name: Run Live End-to-End Transpilation Test
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_BASE_URL: https://openrouter.ai
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          mkdir -p /tmp/e2e-sandbox
+          cat << 'EOF' > /tmp/e2e-sandbox/sample.ts
+          export function add(a: number, b: number): number {
+            return a + b;
+          }
+          EOF
+
+          cat << 'EOF' > /tmp/e2e-sandbox/spec.md
+          Add a pure function `multiply(a: number, b: number): number` that returns `a * b`, while keeping `add` unchanged.
+          EOF
+
+          # Adjust flags below if your dist/main.js uses different CLI options (visible in the --help step above)
+          node dist/main.js \
+            --source /tmp/e2e-sandbox/sample.ts \
+            --spec /tmp/e2e-sandbox/spec.md \
+            --out /tmp/e2e-sandbox/output.ts || node dist/main.js /tmp/e2e-sandbox/sample.ts /tmp/e2e-sandbox/spec.md /tmp/e2e-sandbox/output.ts
+
+          echo "=== Generated Output ==="
+          cat /tmp/e2e-sandbox/output.ts
