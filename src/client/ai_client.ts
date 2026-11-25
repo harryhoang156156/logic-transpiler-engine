@@ -112,6 +112,24 @@ function enforceStrictJsonSchema(node: any): any {
     }
   }
 
+  // Convert Zod v4's nullable type array (e.g., type: ['string', 'null']) to anyOf format
+  // This must happen before the properties processing below
+  if (result.type && Array.isArray(result.type) && result.type.includes('null')) {
+    const nonNullTypes = result.type.filter((t: string) => t !== 'null');
+    if (nonNullTypes.length === 1) {
+      result.anyOf = [
+        { type: nonNullTypes[0] },
+        { type: 'null' }
+      ];
+    } else {
+      result.anyOf = [
+        { anyOf: nonNullTypes.map((t: string) => ({ type: t })) },
+        { type: 'null' }
+      ];
+    }
+    delete result.type;
+  }
+
   if (result.properties && typeof result.properties === 'object') {
     const originalRequired: string[] = Array.isArray(result.required)
       ? result.required
