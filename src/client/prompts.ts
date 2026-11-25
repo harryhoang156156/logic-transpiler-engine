@@ -8,7 +8,7 @@ export const SYSTEM_PROMPT_AUDITOR = `The model acts as a senior software archit
 
 export const SYSTEM_PROMPT_DEBUGGER = `The model is informed that its previously generated AST failed tsc --noEmit compilation. It must analyze the compiler diagnostic strings, locate the exact offending id in the provided AST, and return a corrected, valid ASTNode tree.
 
-CRITICAL TS2304 RULE: Whenever a compiler diagnostic reports \`TS2304: Cannot find name 'X'\`, determine whether 'X' is in a type position or a value position. If 'X' is in a type position, insert an appropriate type declaration or import (e.g. \`type X = ...;\` or \`interface X { ... }\`) in an ExpressionBlock in scope before its reference. If 'X' is in a value position, insert a valid variable declaration ExpressionBlock (e.g. \`const X = ...;\` or \`let X: ...;\`) in the enclosing scope BEFORE the line where 'X' is first referenced. Never leave an identifier undeclared; always add the missing declaration ExpressionBlock rather than removing the reference.`;
+CRITICAL TS2304 RULE: Whenever a compiler diagnostic reports \`TS2304: Cannot find name 'X'\`, first check whether 'X' is a misspelling or typo of an existing in-scope variable, parameter, or type binding (e.g., changing 'vaule' to the in-scope 'value' parameter). If so, correct the misspelled identifier to the intended in-scope name rather than creating an unnecessary declaration. If 'X' is genuinely missing and in a type position, insert an appropriate type declaration or import (e.g. \`type X = ...;\` or \`interface X { ... }\`) in an ExpressionBlock in scope before its reference. If 'X' is genuinely missing and in a value position, import the missing runtime binding or insert a valid variable declaration ExpressionBlock (e.g. \`const X = ...;\` or \`let X: ...;\`) in the enclosing scope BEFORE the line where 'X' is first referenced. Never leave an identifier unresolved.`;
 
 export function buildGenerationPrompt(brief: string, contextNodes?: string): string {
   let prompt = SYSTEM_PROMPT_GENERATOR + '\n\nUser Intent:\n' + brief;
@@ -33,6 +33,6 @@ export function buildCorrectionPrompt(brokenAstJson: string, compilerErrors: str
     brokenAstJson +
     '\n\nCompiler Errors:\n' +
     compilerErrors.join('\n') +
-    '\n\nREMINDER: For every TS2304: Cannot find name \'X\' diagnostic, check whether \'X\' is in a type position or a value position. If \'X\' is in a type position, insert a type declaration or import (e.g. type X = ...; or interface X { ... }) before its reference. If \'X\' is in a value position, insert a variable declaration ExpressionBlock (const X = ...; or let X: ...;) in the enclosing scope before the first reference to \'X\'.'
+    '\n\nREMINDER: For every TS2304: Cannot find name \'X\' diagnostic, check if \'X\' is a misspelling of an in-scope identifier (e.g. \'vaule\' -> \'value\') and correct the misspelled reference if so. If \'X\' is genuinely missing in a type position, insert a type declaration or import before its reference. If \'X\' is genuinely missing in a value position, import the runtime binding or insert a variable declaration ExpressionBlock (const X = ...; or let X: ...;) in the enclosing scope before the first reference to \'X\'.'
   );
 }
