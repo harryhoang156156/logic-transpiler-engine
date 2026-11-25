@@ -12,16 +12,63 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install & Build Engine
+      - name: Install & Build Logic Transpiler Engine
         run: |
           npm ci --no-progress
           npm run build
 
-      - name: Run Live End-to-End Transpilation & Audit Test
+      - name: Configure & Start Bifrost Gateway Binary
         env:
-          BIFROST_BASE_URL: https://openrouter.ai
-          BIFROST_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          LLM_MODEL: particle-ai/particle-1:free
+          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          mkdir -p /tmp/bifrost-data
+          cat << 'EOF' > /tmp/bifrost-data/config.json
+          {
+            "config_store": {
+              "enabled": false
+            },
+            "providers": {
+              "gemini": {
+                "keys": [
+                  {
+                    "name": "gemini-primary",
+                    "value": "env.GEMINI_API_KEY",
+                    "models": ["*"],
+                    "weight": 1.0
+                  }
+                ]
+              },
+              "openrouter": {
+                "keys": [
+                  {
+                    "name": "openrouter-primary",
+                    "value": "env.OPENROUTER_API_KEY",
+                    "models": ["*"],
+                    "weight": 1.0
+                  }
+                ]
+              }
+            }
+          }
+          EOF
+
+          npx -y @maximhq/bifrost -port 8080 -app-dir /tmp/bifrost-data > /tmp/bifrost.log 2>&1 &
+
+          echo "Waiting for Bifrost Gateway on http://localhost:8080..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1 || curl -s http://localhost:8080/ >/dev/null 2>&1; then
+              echo "Bifrost Gateway is up!"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Run Live End-to-End Transpilation & Audit Test via Bifrost
+        env:
+          BIFROST_BASE_URL: http://localhost:8080/openai/v1
+          BIFROST_API_KEY: bifrost-local
+          LLM_MODEL: gemini/gemini-2.5-flash
         run: |
           mkdir -p /tmp/e2e-sandbox
 
@@ -51,3 +98,7 @@ jobs:
             --brief "Keep checkSolanaHealth unchanged and add a helper function formatLamports(lamports: number): number that converts lamports to SOL"
 
           cat /tmp/e2e-sandbox/modified_health.ts
+
+      - name: Print Bifrost Gateway Logs on Failure
+        if: failure()
+        run: cat /tmp/bifrost.log || true
