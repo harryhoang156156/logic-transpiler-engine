@@ -223,6 +223,21 @@ function hasUnsupportedKeywords(node: any): boolean {
     return true;
   }
 
+  // `anyOf` at the root level of a schema (not inside a property) indicates a
+  // discriminated union or other union type, which is unsupported in strict mode.
+  // However, `anyOf` used for optional properties (wrapping with null) appears
+  // inside property values and is handled by the property recursion below.
+  // We only flag `anyOf` as unsupported if it appears at the top level of a
+  // schema object that is not a property value.
+  // Since this function is called on the root schema first, we check for anyOf
+  // at the root level here.
+  if ('anyOf' in node) {
+    // Check if this anyOf is a simple optional wrapper (has null branch and one other branch)
+    // If so, it might be from Zod v4's optional() representation. But at root level,
+    // anyOf always indicates a union type which is unsupported.
+    return true;
+  }
+
   for (const [key, value] of Object.entries(node)) {
     if (key === 'properties' && value && typeof value === 'object') {
       for (const propSchema of Object.values(value as Record<string, any>)) {
@@ -242,13 +257,17 @@ function hasUnsupportedKeywords(node: any): boolean {
       }
     } else if (
       key === 'items' ||
-      key === 'additionalProperties' ||
-      key === 'anyOf'
+      key === 'additionalProperties'
     ) {
       if (hasUnsupportedKeywords(value)) {
         return true;
       }
     }
+    // Note: we intentionally do NOT recurse into 'anyOf' here, because anyOf
+    // inside property values is used for optional property wrapping (which we
+    // create in enforceStrictJsonSchema) and for Zod v4's optional() representation.
+    // Only root-level anyOf (checked above) and anyOf in items/additionalProperties
+    // are considered unsupported.
   }
 
   return false;
