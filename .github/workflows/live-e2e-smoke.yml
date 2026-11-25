@@ -24,9 +24,9 @@ jobs:
 
       - name: Run Live End-to-End Transpilation & Audit Test
         env:
-          BIFROST_BASE_URL: https://openrouter.ai
-          BIFROST_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          LLM_MODEL: ${{ github.event.inputs.llm_model }}
+          BIFROST_BASE_URL: https://googleapis.com
+          BIFROST_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          LLM_MODEL: gemini-2.5-flash
         run: |
           mkdir -p /tmp/e2e-sandbox
 
