@@ -1,11 +1,6 @@
 name: Live E2E Engine Smoke Test
 on:
   workflow_dispatch:
-    inputs:
-      llm_model:
-        description: 'OpenRouter model ID to test through Bifrost-compatible client'
-        required: false
-        default: 'nvidia/nemotron-3-ultra-550b-a55b:free'
 
 jobs:
   live-smoke:
