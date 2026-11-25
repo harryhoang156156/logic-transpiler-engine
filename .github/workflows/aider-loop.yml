@@ -49,7 +49,7 @@ jobs:
           git checkout -b "$BRANCH_NAME"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
-      - name: Run Aider Self-Healing Loop (Idle-Guarded Multi-Key Cascade)
+      - name: Run Aider Self-Healing Loop (Grounded & Idle-Guarded Cascade)
         env:
           GOOGLE_KEY: ${{ secrets.GOOGLE_API_KEY }}
           OR_KEY_1: ${{ secrets.OPENROUTER_API_KEY }}
@@ -144,6 +144,7 @@ jobs:
 
             git reset --hard "$CHECKPOINT_SHA" >/dev/null
             git clean -f >/dev/null
+            rm -f /tmp/aider-tdd-history.md
 
             shopt -s globstar nullglob
             EDIT_FILES=()
@@ -151,7 +152,16 @@ jobs:
               for existing_src in src/**/*.ts; do
                 [ -f "$existing_src" ] && EDIT_FILES+=("$existing_src")
               done
+            else
+              # Auto-load any existing src/ or tests/ files explicitly referenced in $SPEC_FILE so Aider sees their full code!
+              SPEC_TEXT=$(cat "$SPEC_FILE")
+              for existing_file in src/**/*.ts tests/**/*.ts; do
+                if [ -f "$existing_file" ] && [ "$existing_file" != "src/schemas.ts" ] && echo "$SPEC_TEXT" | grep -qF "$existing_file"; then
+                  EDIT_FILES+=("$existing_file")
+                fi
+              done
             fi
+
             CHECKPOINT_FILES=()
             if [ "$CHECKPOINT_SHA" != "$INITIAL_SHA" ]; then
               while IFS= read -r cf; do
@@ -171,18 +181,19 @@ jobs:
             if [[ "$SPEC_FILE" == *integration* ]]; then
               PROMPT="IMPORTANT: $SPEC_FILE, $OVERVIEW_FILE, and dependencies_and_connections.md are strictly READ-ONLY reference documents—do NOT edit them. $RESUME_NOTE Follow $SPEC_FILE to wire the components together end-to-end (updating src/main.ts or other src/ files only if needed) and ensure tests/integration.test.ts passes completely (importing from 'vitest', using .js extensions on relative imports). Loop until npm run build and npm run test pass."
             else
-              PROMPT="IMPORTANT: All files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. $RESUME_NOTE Read $SPEC_FILE to find the exact target file paths in src/ and tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js'). Loop until npm run build and npm run test pass."
+              PROMPT="IMPORTANT: All files loaded as read-only ($OVERVIEW_FILE, dependencies_and_connections.md, src/schemas.ts, and $SPEC_FILE) are strictly REFERENCE DOCUMENTS—do NOT edit them. Any existing target files mentioned in $SPEC_FILE (${EDIT_FILES[*]}) are already loaded in editable chat with their full contents. $RESUME_NOTE Implement or update the exact target files in src/ and tests/ (importing from 'vitest', using .js extensions on relative imports like '../schemas.js') and stop immediately once npm run build and npm run test pass."
             fi
 
             echo "=================================================="
-            echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7})"
+            echo "Attempting Aider [$PROVIDER] -> $MODEL (Checkpoint: ${CHECKPOINT_SHA:0:7}, Editable: ${EDIT_FILES[*]})"
             echo "=================================================="
 
             run_with_idle_timeout aider \
               --model "$MODEL" \
               --edit-format whole \
-              --map-tokens 1024 \
-              --chat-history-file /tmp/aider-tdd-history.md \
+              --map-tokens 2048 \
+              --max-reflections 1 \
+              --no-suggest-shell-commands \
               --no-detect-urls \
               --no-show-model-warnings \
               --yes \
