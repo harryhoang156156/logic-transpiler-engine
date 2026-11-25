@@ -1,6 +1,11 @@
 name: Live E2E Engine Smoke Test
 on:
   workflow_dispatch:
+    inputs:
+      llm_model:
+        description: 'OpenRouter model ID to test through Bifrost-compatible client'
+        required: false
+        default: 'nvidia/nemotron-3-ultra-550b-a55b:free'
 
 jobs:
   live-smoke:
@@ -17,33 +22,37 @@ jobs:
           npm ci --no-progress
           npm run build
 
-      - name: Inspect CLI Help & Flags
-        run: node dist/main.js --help || true
-
-      - name: Run Live End-to-End Transpilation Test
+      - name: Run Live End-to-End Transpilation & Audit Test
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_BASE_URL: https://openrouter.ai
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          BIFROST_BASE_URL: https://openrouter.ai
+          BIFROST_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          LLM_MODEL: ${{ github.event.inputs.llm_model }}
         run: |
           mkdir -p /tmp/e2e-sandbox
-          cat << 'EOF' > /tmp/e2e-sandbox/sample.ts
-          export function add(a: number, b: number): number {
-            return a + b;
-          }
+
+          cat << 'EOF' > /tmp/e2e-sandbox/feature_spec.md
+          Create an async function `checkSolanaHealth(rpcUrl: string): Promise<number>` that initializes a Solana Connection using `rpcUrl`, fetches the current slot or block height, and wraps the call in a try/catch block that logs errors and rethrows.
           EOF
 
-          cat << 'EOF' > /tmp/e2e-sandbox/spec.md
-          Add a pure function `multiply(a: number, b: number): number` that returns `a * b`, while keeping `add` unchanged.
-          EOF
-
-          # Adjust flags below if your dist/main.js uses different CLI options (visible in the --help step above)
+          echo "=== 1. Testing Greenfield Mode ==="
           node dist/main.js \
-            --source /tmp/e2e-sandbox/sample.ts \
-            --spec /tmp/e2e-sandbox/spec.md \
-            --out /tmp/e2e-sandbox/output.ts || node dist/main.js /tmp/e2e-sandbox/sample.ts /tmp/e2e-sandbox/spec.md /tmp/e2e-sandbox/output.ts
+            --overview architecture_overview.md \
+            --spec /tmp/e2e-sandbox/feature_spec.md \
+            --out /tmp/e2e-sandbox/generated_health.ts
 
-          echo "=== Generated Output ==="
-          cat /tmp/e2e-sandbox/output.ts
+          cat /tmp/e2e-sandbox/generated_health.ts
+
+          echo "=== 2. Testing Audit-Only Mode (--audit-only) ==="
+          node dist/main.js \
+            --audit-only \
+            --src /tmp/e2e-sandbox/generated_health.ts \
+            --brief "Audit for unhandled RPC disconnects and missing input validation"
+
+          echo "=== 3. Testing Blueprint Modify Mode ==="
+          node dist/main.js \
+            --overview architecture_overview.md \
+            --src /tmp/e2e-sandbox/generated_health.ts \
+            --out /tmp/e2e-sandbox/modified_health.ts \
+            --brief "Keep checkSolanaHealth unchanged and add a helper function formatLamports(lamports: number): number that converts lamports to SOL"
+
+          cat /tmp/e2e-sandbox/modified_health.ts
