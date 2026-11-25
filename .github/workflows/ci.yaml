@@ -14,7 +14,8 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - run: npm ci --silent --no-progress
+      - run: npm ci --legacy-peer-deps --no-progress
       - run: npm run build && npm run test
       - name: CLI Bundle Smoke Test
         run: node dist/main.js --help || true
+
