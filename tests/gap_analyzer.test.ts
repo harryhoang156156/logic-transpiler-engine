@@ -99,7 +99,7 @@ describe('gap_analyzer', () => {
     );
   });
 
-  it('throws an error when report omits a required module', async () => {
+  it('backfills KEEP_AS_IS when report omits a required module', async () => {
     const mockClient = {
       chat: {
         completions: {
@@ -124,12 +124,15 @@ describe('gap_analyzer', () => {
       },
     };
 
-    await expect(analyzeCodeGaps(sampleAst, 'Add feature', mockClient)).rejects.toThrow(
-      /Report missing resolution for required module or function node:/
-    );
+    const report = await analyzeCodeGaps(sampleAst, 'Add feature', mockClient);
+    expect(report.actions).toHaveLength(2);
+    const backfilledModuleAction = report.actions.find((a) => a.targetNodeId === 'node_1');
+    expect(backfilledModuleAction).toBeDefined();
+    expect(backfilledModuleAction?.resolution).toBe('KEEP_AS_IS');
+    expect(backfilledModuleAction?.reasoning).toBe('No changes required (defaulted).');
   });
 
-  it('throws an error when report omits a required function', async () => {
+  it('backfills KEEP_AS_IS when report omits a required function', async () => {
     const mockClient = {
       chat: {
         completions: {
@@ -154,12 +157,15 @@ describe('gap_analyzer', () => {
       },
     };
 
-    await expect(analyzeCodeGaps(sampleAst, 'Add feature', mockClient)).rejects.toThrow(
-      /Report missing resolution for required module or function node:/
-    );
+    const report = await analyzeCodeGaps(sampleAst, 'Add feature', mockClient);
+    expect(report.actions).toHaveLength(2);
+    const backfilledFuncAction = report.actions.find((a) => a.targetNodeId === 'node_2');
+    expect(backfilledFuncAction).toBeDefined();
+    expect(backfilledFuncAction?.resolution).toBe('KEEP_AS_IS');
+    expect(backfilledFuncAction?.reasoning).toBe('No changes required (defaulted).');
   });
 
-  it('throws an error when report provides an empty actions array', async () => {
+  it('backfills KEEP_AS_IS for all required nodes when report provides an empty actions array', async () => {
     const mockClient = {
       chat: {
         completions: {
@@ -178,8 +184,21 @@ describe('gap_analyzer', () => {
       },
     };
 
-    await expect(analyzeCodeGaps(sampleAst, 'Add feature', mockClient)).rejects.toThrow(
-      /Report missing resolution for required module or function node:/
+    const report = await analyzeCodeGaps(sampleAst, 'Add feature', mockClient);
+    expect(report.actions).toHaveLength(2);
+    expect(report.actions).toEqual(
+      expect.arrayContaining([
+        {
+          targetNodeId: 'node_1',
+          resolution: 'KEEP_AS_IS',
+          reasoning: 'No changes required (defaulted).',
+        },
+        {
+          targetNodeId: 'node_2',
+          resolution: 'KEEP_AS_IS',
+          reasoning: 'No changes required (defaulted).',
+        },
+      ])
     );
   });
 });

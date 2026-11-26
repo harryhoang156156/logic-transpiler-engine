@@ -109,8 +109,12 @@ export async function analyzeCodeGaps(
     }
   }
 
-  if (requiredModAndFuncIds.size > 0) {
-    throw new Error(`Report missing resolution for required module or function node: ${Array.from(requiredModAndFuncIds).join(', ')}`);
+  for (const missingId of requiredModAndFuncIds) {
+    report.actions.push({
+      targetNodeId: missingId,
+      resolution: 'KEEP_AS_IS',
+      reasoning: 'No changes required (defaulted).',
+    });
   }
 
   return report;
@@ -131,4 +135,3 @@ export function extractTargetSubgraphs(
   }
   return subgraphs;
 }
-

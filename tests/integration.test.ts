@@ -991,37 +991,45 @@ describe('integration', () => {
   });
 
   describe('main.ts root ModuleContainer validation', () => {
-    it('rejects non-ModuleContainer root from greenfield generation', async () => {
+    it('auto-wraps a non-ModuleContainer root from greenfield generation', async () => {
       const dir = await makeTempDir();
       const outFile = path.join(dir, 'bot.ts');
 
-      // LLM returns an AsyncFunctionBlock as root (invalid)
-      const invalidAst: ASTNode = {
+      // LLM returns an AsyncFunctionBlock as root (invalid) — should be auto-wrapped
+      const bareRootAst: ASTNode = {
         id: 'node_1',
         type: 'AsyncFunctionBlock',
         functionName: 'runBot',
         parameters: [],
         returnType: 'Promise<void>',
         isExported: true,
-        body: [],
+        body: [
+          {
+            id: 'node_2',
+            type: 'ExpressionBlock',
+            codeSnippet: 'console.log("wrapped")',
+          },
+        ],
       };
 
       const clientOverride = createMockClient([
-        { content: JSON.stringify({ ast: invalidAst }) },
+        { content: JSON.stringify({ ast: bareRootAst }) },
       ]);
 
-      let threw = false;
-      try {
-        await runEnginePipeline({
-          brief: 'Create bot',
-          outputFilePath: outFile,
-          clientOverride,
-        });
-      } catch (err) {
-        threw = true;
-        expect((err as Error).message).toContain('Root AST node must be a ModuleContainer');
-      }
-      expect(threw).toBe(true);
+      const result = await runEnginePipeline({
+        brief: 'Create bot',
+        outputFilePath: outFile,
+        clientOverride,
+      });
+
+      expect(result.success).toBe(true);
+
+      const writtenCode = await fs.readFile(outFile, 'utf-8');
+      expect(writtenCode).toContain('async function runBot');
+      expect(writtenCode).toContain('console.log("wrapped")');
+
+      const verification = await verifyTypeScriptCode(writtenCode, process.cwd());
+      expect(verification.success).toBe(true);
     });
 
     it('rejects non-ModuleContainer root from correction loop', async () => {

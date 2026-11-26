@@ -12,6 +12,15 @@ describe('prompts', () => {
     expect(SYSTEM_PROMPT_GENERATOR).toContain('unique, sequential id');
   });
 
+  it('SYSTEM_PROMPT_GENERATOR includes variable declaration instructions', () => {
+    expect(SYSTEM_PROMPT_GENERATOR).toContain('VARIABLE DECLARATION');
+    expect(SYSTEM_PROMPT_GENERATOR).toContain('MUST be declared first');
+    expect(SYSTEM_PROMPT_GENERATOR).toContain('ExpressionBlock');
+    expect(SYSTEM_PROMPT_GENERATOR).toContain('const tx = ...;');
+    expect(SYSTEM_PROMPT_GENERATOR).toContain('let result: ...;');
+    expect(SYSTEM_PROMPT_GENERATOR).toContain('undeclared variable identifier');
+  });
+
   it('SYSTEM_PROMPT_AUDITOR is non-empty and contains required keywords', () => {
     expect(SYSTEM_PROMPT_AUDITOR).toBeTruthy();
     expect(SYSTEM_PROMPT_AUDITOR).toContain('senior software architect');
@@ -28,6 +37,14 @@ describe('prompts', () => {
     expect(SYSTEM_PROMPT_DEBUGGER).toContain('corrected, valid ASTNode');
   });
 
+  it('SYSTEM_PROMPT_DEBUGGER includes TS2304 variable declaration instructions', () => {
+    expect(SYSTEM_PROMPT_DEBUGGER).toContain('TS2304');
+    expect(SYSTEM_PROMPT_DEBUGGER).toContain("Cannot find name 'X'");
+    expect(SYSTEM_PROMPT_DEBUGGER).toContain('ExpressionBlock');
+    expect(SYSTEM_PROMPT_DEBUGGER).toContain('const X = ...;');
+    expect(SYSTEM_PROMPT_DEBUGGER).toContain('let X: T = ...;');
+  });
+
   it('buildGenerationPrompt formats brief and optional context', () => {
     const brief = 'Add a new feature';
     const result = buildGenerationPrompt(brief);
@@ -40,6 +57,13 @@ describe('prompts', () => {
     expect(resultWithContext).toContain('existing node');
     expect(resultWithContext).toContain('\n\nExisting Context Nodes:\n');
     expect(resultWithContext).not.toContain('\\n');
+  });
+
+  it('buildGenerationPrompt includes variable declaration reminder', () => {
+    const result = buildGenerationPrompt('Add a feature');
+    expect(result).toContain('MUST be declared first');
+    expect(result).toContain('ExpressionBlock');
+    expect(result).toContain('undeclared variable identifier');
   });
 
   it('buildAuditPrompt formats existingAstJson and featureBrief', () => {
@@ -68,5 +92,12 @@ describe('prompts', () => {
     expect(result).toContain('\n\nCompiler Errors:\n');
     expect(result).toContain('Error 1\nError 2');
     expect(result).not.toContain('\\n');
+  });
+
+  it('buildCorrectionPrompt includes TS2304 variable declaration reminder', () => {
+    const result = buildCorrectionPrompt('{"id":"1"}', ["TS2304: Cannot find name 'tx'"]);
+    expect(result).toContain('TS2304');
+    expect(result).toContain('ExpressionBlock');
+    expect(result).toContain('const X = ...;');
   });
 });

@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { ASTNode, ModuleContainer, AsyncFunctionBlock } from './schemas.js';
+import { ASTNode, ModuleContainer, AsyncFunctionBlock, ASTNodeSchema } from './schemas.js';
 import { requestAstGeneration, requestAstCorrection } from './client/ai_client.js';
 import { parseTypeScriptFile } from './ingestion/parser.js';
 import { analyzeCodeGaps, extractTargetSubgraphs } from './ingestion/gap_analyzer.js';
@@ -53,6 +53,27 @@ function validateRootModuleContainer(node: ASTNode): asserts node is ModuleConta
   if (node.type !== 'ModuleContainer') {
     throw new Error(`Root AST node must be a ModuleContainer, got "${node.type}"`);
   }
+}
+
+/**
+ * Deterministically coerce a generated AST into a valid root ModuleContainer.
+ * If the LLM returned a bare non-ModuleContainer node (e.g. an AsyncFunctionBlock),
+ * wrap it inside a ModuleContainer instead of throwing.
+ */
+function ensureRootModuleContainer(node: ASTNode): ModuleContainer {
+  if (node.type === 'ModuleContainer') {
+    return node;
+  }
+
+  const wrapped = {
+    id: 'module_root',
+    type: 'ModuleContainer' as const,
+    moduleName: 'generated_module',
+    exports: [] as string[],
+    children: [node],
+  };
+
+  return ASTNodeSchema.parse(wrapped) as ModuleContainer;
 }
 
 function validateReplacementContract(targetNode: ASTNode, replacementNode: ASTNode): void {
@@ -182,17 +203,17 @@ export async function runEnginePipeline(options: EnginePipelineOptions): Promise
       currentAst = applyAtomicPatches(rootAst, patches);
     } else {
       const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
-      validateRootModuleContainer(newNode);
+      const rootNode = ensureRootModuleContainer(newNode);
       const existingIds = new Set<string>();
       resetIdCounter();
-      currentAst = remapNodeIds(newNode, existingIds);
+      currentAst = remapNodeIds(rootNode, existingIds);
     }
   } else {
     const newNode = await requestAstGeneration(effectiveBrief, undefined, options.clientOverride);
-    validateRootModuleContainer(newNode);
+    const rootNode = ensureRootModuleContainer(newNode);
     const existingIds = new Set<string>();
     resetIdCounter();
-    currentAst = remapNodeIds(newNode, existingIds);
+    currentAst = remapNodeIds(rootNode, existingIds);
   }
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
