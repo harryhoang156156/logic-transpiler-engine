@@ -42,7 +42,7 @@ describe('prompts', () => {
     expect(SYSTEM_PROMPT_DEBUGGER).toContain("Cannot find name 'X'");
     expect(SYSTEM_PROMPT_DEBUGGER).toContain('ExpressionBlock');
     expect(SYSTEM_PROMPT_DEBUGGER).toContain('const X = ...;');
-    expect(SYSTEM_PROMPT_DEBUGGER).toContain('let X: ...;');
+    expect(SYSTEM_PROMPT_DEBUGGER).toContain('let X: T = ...;');
   });
 
   it('buildGenerationPrompt formats brief and optional context', () => {
